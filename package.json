@@ -10,7 +10,9 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "precompute": "node scripts/run-precompute.mjs",
+    "precompute:check": "python -c \"import os; pngs=[f for r,d,fs in os.walk('public/precomputed') for f in fs if f.endswith('.png')]; print(f'{len(pngs)} PNGs found'); [print(f'  {os.path.join(r,f)}') for r,d,fs in os.walk('public/precomputed') for f in fs if f.endswith('.png')]\""
   },
   "dependencies": {
     "clsx": "^2.1.1",

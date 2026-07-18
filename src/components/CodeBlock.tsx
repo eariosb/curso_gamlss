@@ -41,6 +41,7 @@ export function CodeBlock({ id, code, language = 'r', title, precomputed }: Code
   const [showCode, setShowCode] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [consoleExpanded, setConsoleExpanded] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
   async function copy() {
     try {
@@ -171,14 +172,25 @@ export function CodeBlock({ id, code, language = 'r', title, precomputed }: Code
                   )}
                 </div>
               )}
-              {precomputed.image && (
+              {precomputed.image && !imageError && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={precomputed.image}
                   alt={precomputed.imageAlt ?? 'Gráfico generado por el código R anterior'}
                   className="w-full border-t border-ink-200 bg-white"
                   loading="lazy"
+                  onError={() => setImageError(true)}
                 />
+              )}
+              {precomputed.image && imageError && (
+                <div className="border-t border-ink-200 bg-ink-50 px-4 py-8 text-center">
+                  <p className="text-sm font-medium text-ink-600">
+                    Gráfico no disponible temporalmente
+                  </p>
+                  <p className="mt-1 text-xs text-ink-400">
+                    Ejecuta el código R anterior en tu entorno local para generar este gráfico.
+                  </p>
+                </div>
               )}
             </div>
           )}

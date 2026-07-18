@@ -1,9 +1,10 @@
 # Curso GAMLSS - Progreso del Proyecto
 
 ## Estado general
-- **Fecha de actualización**: 2026-07-17
+- **Fecha de actualización**: 2026-07-18
 - **Fase**: 1 (sin WebR, sin backend)
 - **Progreso MDX**: 20/20 módulos completos (100%)
+- **Gráficos precomputados**: 24 PNGs en `public/precomputed/` (20 reales + 4 placeholders del módulo 11)
 
 ## Componentes React creados y registrados
 | Componente | Archivo | Estado |
@@ -60,10 +61,47 @@ Todos registrados en `src/components/mdx-components.tsx`.
 19. `19-proyecto-final-ifrs9.mdx` - Proyecto IFRS 9 completo
 20. `20-horizontes-bayesian-webr.mdx` - Bayesian GAMLSS y WebR
 
+## Gráficos precomputados
+
+### Imágenes existentes (20 PNGs reales generados con R)
+- `01/`: explorar-carteras.png, histdist-severidad.png
+- `02/`: gamlss-gamma-mu.png, gamlss-gamma-mu-sigma.png, residuos-rapido.png
+- `03/`: fitdist-severidad.png
+- `04/`: worm-plot-dbbmi.png, worm-plot-falla.png
+- `05/`: cementos-modelos.png
+- `06/`: pd-efecto-aleatorio.png
+- `07/`: balance-sesgo-varianza.png
+- `09/`: lotes-beinf.png
+- `10/`: bct-gb2-comparacion.png
+- `11/`: centiles-dbbmi.png, lmst-extension.png
+- `12/`: weibull-censura.png
+- `13/`: estacionalidad-cy.png
+- `14/`: pd-modelo-completo.png
+- `15/`: lgd-beinf-completo.png
+- `17/`: simulacion-agregada.png
+
+### Placeholders (4 PNGs del módulo 11, pendientes de regenerar con R)
+- `11/`: lms-parametros.png, worm-plot-lms.png, comparacion-lms-lmst.png, centiles-severidad-plot.png
+
+### Cómo regenerar todos los gráficos
+1. Instalar R con paquetes: `gamlss`, `gamlss.data`, `survival`
+2. Ejecutar: `pnpm precompute` (equivale a `Rscript src/data-gen/precompute_outputs.R`)
+3. Los PNGs se generan en `public/precomputed/` a 150 DPI, 1000x700px
+4. Verificar: `pnpm precompute:check`
+
+### Fallback visual
+El componente `CodeBlock` tiene `onError` en `<img>`: si un PNG falta, muestra
+"Gráfico no disponible temporalmente" con instrucción de ejecutar el código R.
+
+### Calidad gráfica del script R
+- Paleta consistente: `COL_PRIMARY` (#1e3a5f), `COL_SECONDARY` (#2e7d32), `COL_ACCENT` (#e67e22), `COL_DANGER` (#c0392b)
+- Tema limpio: `set_clean_par()` con fondo blanco, grid sutil, fuentes legibles
+- Anotaciones pedagógicas en worm plots (patologías señaladas)
+- `histDist` con colores distinguibles y leyenda clara
+- `centiles` con bandas de confianza y etiquetas descriptivas
+
 ## Pendiente
-- [ ] Generar datos CSV ejecutando los scripts R
-- [ ] Generar outputs precomputados (imágenes PNG, consola)
+- [ ] Regenerar los 4 placeholders del módulo 11 ejecutando R con `pnpm precompute`
 - [ ] Tests unitarios para componentes React nuevos
 - [ ] Tests E2E para navegación y accesibilidad
-- [ ] Validar sintaxis MDX (build de Next.js)
 - [ ] Fase 2: integración WebR para RCell interactivos

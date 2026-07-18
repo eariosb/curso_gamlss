@@ -4,7 +4,7 @@
 # Ejecutar desde la raiz del proyecto:
 #   Rscript src/data-gen/precompute_outputs.R
 #
-# Requiere: gamlss, gamlss.data
+# Requiere: gamlss, gamlss.data, survival
 # =============================================================================
 
 library(gamlss)
@@ -14,11 +14,52 @@ library(survival)
 out_base <- file.path("public", "precomputed")
 data_dir <- file.path("public", "data")
 
-# Helper: guardar plot en PNG
-save_png <- function(path, expr, width = 800, height = 600) {
+# ---- Paleta del curso --------------------------------------------------------
+COL_PRIMARY   <- "#1e3a5f"   # azul oscuro
+COL_SECONDARY <- "#2e7d32"   # verde
+COL_ACCENT    <- "#e67e22"   # naranja
+COL_DANGER    <- "#c0392b"   # rojo
+COL_GRID      <- "#e9ecef"   # gris claro para grid
+COL_BG        <- "#ffffff"   # fondo blanco
+COL_TEXT      <- "#343a40"   # texto oscuro
+COL_MUTED     <- "#6b7280"   # texto secundario
+
+# ---- Tema limpio consistente -------------------------------------------------
+set_clean_par <- function(mfrow = c(1, 1), mar = c(4.5, 4.5, 3, 2)) {
+  par(
+    mfrow       = mfrow,
+    bg          = COL_BG,
+    fg          = COL_TEXT,
+    col.main    = COL_TEXT,
+    col.lab     = COL_TEXT,
+    col.axis    = COL_MUTED,
+    col.sub     = COL_MUTED,
+    font.main   = 2,
+    font.lab    = 1,
+    font.axis   = 1,
+    cex.main    = 1.1,
+    cex.lab     = 0.95,
+    cex.axis    = 0.85,
+    mar         = mar,
+    las         = 1,
+    bty         = "o"
+  )
+}
+
+# ---- Helper: guardar plot en PNG de alta calidad -----------------------------
+save_png <- function(path, expr, width = 1000, height = 700) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
-  png(path, width = width, height = height, res = 120)
-  tryCatch(expr, finally = dev.off())
+  png(path, width = width, height = height, res = 150, bg = "white")
+  tryCatch(
+    {
+      set_clean_par()
+      expr
+    },
+    finally = {
+      dev.off()
+      par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1)
+    }
+  )
   cat("OK:", path, "\n")
 }
 
@@ -34,12 +75,14 @@ severidad$sector <- as.factor(severidad$sector)
 save_png(file.path(out_base, "01", "explorar-carteras.png"), {
   cartera_A <- severidad$severidad[severidad$sector == "manufactura"]
   cartera_B <- severidad$severidad[severidad$sector == "construccion"]
-  plot(density(cartera_A), col = "#1e3a5f", lwd = 2,
+  plot(density(cartera_A), col = COL_PRIMARY, lwd = 2.5,
        main = "Densidades de severidad por cartera",
-       xlab = "Severidad (millones COP)", xlim = range(severidad$severidad))
-  lines(density(cartera_B), col = "#c62828", lwd = 2)
+       xlab = "Severidad (millones COP)", xlim = range(severidad$severidad),
+       col.lab = COL_TEXT, col.main = COL_TEXT)
+  lines(density(cartera_B), col = COL_DANGER, lwd = 2.5)
   legend("topright", c("Manufactura", "Construccion"),
-         col = c("#1e3a5f", "#c62828"), lwd = 2, bty = "n")
+         col = c(COL_PRIMARY, COL_DANGER), lwd = 2.5, bty = "n",
+         cex = 0.9)
 })
 
 # 01/histdist-severidad.png
@@ -48,7 +91,7 @@ save_png(file.path(out_base, "01", "histdist-severidad.png"), {
   m_no <- gamlss(y ~ 1, family = NO)
   m_ga <- gamlss(y ~ 1, family = GA)
   m_bct <- gamlss(y ~ 1, family = BCT)
-  par(mfrow = c(1, 3))
+  par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
   histDist(y, family = NO, main = "Normal")
   histDist(y, family = GA, main = "Gamma")
   histDist(y, family = BCT, main = "BCT")
@@ -101,6 +144,8 @@ save_png(file.path(out_base, "04", "worm-plot-dbbmi.png"), {
                    nu.formula = ~ pb(age), family = BCCG, data = dbbmi)
   wp(m_good, xvar = dbbmi$age, n.inter = 4,
      main = "Worm plots - BCCG (buen ajuste)")
+  mtext("Gusanos cerca de la linea horizontal: sin patologia",
+        side = 3, line = -1, cex = 0.7, col = COL_SECONDARY)
 })
 
 # 04/worm-plot-falla.png (modelo malo: Normal sin suavizados)
@@ -108,6 +153,8 @@ save_png(file.path(out_base, "04", "worm-plot-falla.png"), {
   m_bad <- gamlss(bmi ~ age, family = NO, data = dbbmi)
   wp(m_bad, xvar = dbbmi$age, n.inter = 4,
      main = "Worm plots - Normal (mal ajuste)")
+  mtext("Gusanos con forma de S/U: patologia de curtosis y asimetria",
+        side = 3, line = -1, cex = 0.7, col = COL_DANGER)
 })
 
 # =============================================================================
@@ -264,15 +311,20 @@ save_png(file.path(out_base, "11", "centiles-severidad-plot.png"), {
   q50 <- qBCT(0.50, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
   q95 <- qBCT(0.95, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
   q99 <- qBCT(0.99, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
-  plot(newd$monto, q50, type = "l", lwd = 2, col = "#1e3a5f",
+  plot(newd$monto, q50, type = "l", lwd = 2.5, col = COL_PRIMARY,
        main = "Centiles de severidad por monto (manufactura)",
        xlab = "Monto asegurado (millones COP)",
        ylab = "Severidad (millones COP)",
        ylim = c(0, max(q99) * 1.1))
-  lines(newd$monto, q95, lwd = 2, col = "#e67e22")
-  lines(newd$monto, q99, lwd = 2, col = "#c0392b")
-  legend("topleft", c("P50", "P95", "P99"),
-         col = c("#1e3a5f", "#e67e22", "#c0392b"), lwd = 2, bty = "n")
+  polygon(c(newd$monto, rev(newd$monto)), c(q50, rev(q99)),
+          col = adjustcolor(COL_PRIMARY, 0.06), border = NA)
+  lines(newd$monto, q95, lwd = 2.5, col = COL_ACCENT)
+  lines(newd$monto, q99, lwd = 2.5, col = COL_DANGER)
+  legend("topleft", c("P50 (mediana)", "P95", "P99 (cola)"),
+         col = c(COL_PRIMARY, COL_ACCENT, COL_DANGER), lwd = 2.5, bty = "n",
+         cex = 0.9)
+  mtext("La cola P99 se ensancha con el monto: mayor incertidumbre",
+        side = 3, line = 0.3, cex = 0.7, col = COL_MUTED)
 })
 
 # =============================================================================
@@ -372,11 +424,12 @@ save_png(file.path(out_base, "17", "simulacion-agregada.png"), {
   }
 
   hist(S_total, breaks = 50, main = "Perdida agregada - Construccion urbana",
-       xlab = "Millones COP", col = "#dbe7f2", border = "#1e3a5f")
-  abline(v = mean(S_total), col = "#2e7d32", lwd = 2, lty = 2)
-  abline(v = quantile(S_total, 0.995), col = "#dc2626", lwd = 2, lty = 2)
-  legend("topright", c("E[S]", "VaR 99.5%"), col = c("#2e7d32", "#dc2626"),
-         lwd = 2, lty = 2, bty = "n")
+       xlab = "Millones COP", col = "#dbe7f2", border = COL_PRIMARY)
+  abline(v = mean(S_total), col = COL_SECONDARY, lwd = 2.5, lty = 2)
+  abline(v = quantile(S_total, 0.995), col = COL_DANGER, lwd = 2.5, lty = 2)
+  legend("topright", c("E[S] (prima pura)", "VaR 99.5% (capital)"),
+         col = c(COL_SECONDARY, COL_DANGER), lwd = 2.5, lty = 2, bty = "n",
+         cex = 0.9)
 })
 
 cat("\n=== DONE: todos los PNG generados ===\n")
