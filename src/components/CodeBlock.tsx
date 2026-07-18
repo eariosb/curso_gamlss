@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import clsx from 'clsx';
 
@@ -42,6 +42,20 @@ export function CodeBlock({ id, code, language = 'r', title, precomputed }: Code
   const [showResult, setShowResult] = useState(false);
   const [consoleExpanded, setConsoleExpanded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [imageRetryKey, setImageRetryKey] = useState(0);
+
+  useEffect(() => {
+    if (!precomputed?.image || imageError) return;
+    const img = new Image();
+    img.src = precomputed.image;
+    img.onload = () => setImageError(false);
+    img.onerror = () => {
+      if (imageRetryKey === 0) {
+        const timer = setTimeout(() => setImageRetryKey(1), 500);
+        return () => clearTimeout(timer);
+      }
+    };
+  }, [precomputed?.image, imageRetryKey]);
 
   async function copy() {
     try {
@@ -175,11 +189,13 @@ export function CodeBlock({ id, code, language = 'r', title, precomputed }: Code
               {precomputed.image && !imageError && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={precomputed.image}
+                  key={imageRetryKey}
+                  src={imageRetryKey > 0 ? `${precomputed.image}?v=${imageRetryKey}` : precomputed.image}
                   alt={precomputed.imageAlt ?? 'Gráfico generado por el código R anterior'}
                   className="w-full border-t border-ink-200 bg-white"
                   loading="lazy"
                   onError={() => setImageError(true)}
+                  onLoad={() => setImageError(false)}
                 />
               )}
               {precomputed.image && imageError && (
