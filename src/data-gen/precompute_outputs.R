@@ -191,6 +191,44 @@ save_png(file.path(out_base, "06", "pd-efecto-aleatorio.png"), {
   plot(m2, xvar = cartera_pd$sector, main = "PD por sector")
 })
 
+# 06/multilevel-blups.png — BLUPs por sector y trimestre (efectos cruzados)
+save_png(file.path(out_base, "06", "multilevel-blups.png"), {
+  m_cross <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad +
+                      random(factor(sector)) + random(factor(trimestre)),
+                    family = BI, data = cartera_pd)
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  re_sector <- ranef(m_cross, what = "mu")
+  re_trim <- ranef(m_cross, what = "mu", parameter = "random(factor(trimestre))")
+  barplot(re_sector, horiz = TRUE, las = 1, col = COL_PRIMARY,
+          main = "BLUPs por sector", xlab = "Efecto aleatorio (logit)",
+          names.arg = levels(cartera_pd$sector), cex.names = 0.8)
+  abline(v = 0, lty = 2, col = COL_MUTED)
+  barplot(re_trim, horiz = TRUE, las = 1, col = COL_ACCENT,
+          main = "BLUPs por trimestre", xlab = "Efecto aleatorio (logit)",
+          names.arg = paste0("T", levels(cartera_pd$trimestre)), cex.names = 0.8)
+  abline(v = 0, lty = 2, col = COL_MUTED)
+  par(mfrow = c(1, 1))
+})
+
+# 06/sigma-re-comparacion.png — Efectos aleatorios en mu y sigma (severidad)
+save_png(file.path(out_base, "06", "sigma-re-comparacion.png"), {
+  m_sigma <- gamlss(severidad ~ log(monto) + antiguedad + random(factor(sector)),
+                    sigma.formula = ~ random(factor(sector)),
+                    family = GA, data = severidad)
+  re_mu <- ranef(m_sigma, what = "mu")
+  re_sigma <- ranef(m_sigma, what = "sigma")
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  barplot(re_mu, horiz = TRUE, las = 1, col = COL_PRIMARY,
+          main = "Efecto aleatorio en μ", xlab = "b_sector (log)",
+          names.arg = levels(severidad$sector), cex.names = 0.8)
+  abline(v = 0, lty = 2, col = COL_MUTED)
+  barplot(re_sigma, horiz = TRUE, las = 1, col = COL_ACCENT,
+          main = "Efecto aleatorio en σ", xlab = "b_sector (log)",
+          names.arg = levels(severidad$sector), cex.names = 0.8)
+  abline(v = 0, lty = 2, col = COL_MUTED)
+  par(mfrow = c(1, 1))
+})
+
 # =============================================================================
 # Modulo 07: balance sesgo-varianza
 # =============================================================================

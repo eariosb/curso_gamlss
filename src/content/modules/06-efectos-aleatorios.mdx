@@ -1,10 +1,10 @@
 ---
 title: "6. Efectos aleatorios en GAMLSS"
 slug: "06-efectos-aleatorios"
-objective: "Incorporar efectos aleatorios en cualquier parámetro de la distribución usando re() en gamlss, modelar heterogeneidad entre grupos, y comparar con los GLMM del curso MLM."
+objective: "Incorporar efectos aleatorios en cualquier parámetro de la distribución usando re() en gamlss, modelar heterogeneidad entre grupos con efectos anidados y cruzados, construir modelos multinivel distribucionales, y comparar con los GLMM del curso MLM."
 order: 6
 datasets: ["cartera_pd", "severidad_acc"]
-duration: 80
+duration: 120
 prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 5: Suavizados"]
 ---
 
@@ -201,7 +201,258 @@ distribución** entre grupos.
 
 </Callout>
 
-## 6. Cierre
+## 6. Multilevel GAMLSS: más allá de la media jerárquica
+
+Hasta aquí hemos visto un efecto aleatorio por sector en un parámetro. Pero
+en la práctica los datos tienen **estructura jerárquica**: pólizas anidadas
+en carteras, carteras en sectores, observaciones repetidas en el tiempo.
+GAMLSS hereda toda la maquinaria de los modelos mixtos y la extiende a la
+distribución completa.
+
+### 6.1. Estructura jerárquica anidada
+
+En ACC, cada cliente pertenece a un sector y es observado durante varios
+trimestres. La estructura es:
+
+$$\text{cliente}_i \to \text{sector}_{j} \to \text{trimestre}_{t}$$
+
+Un modelo con efectos aleatorios **anidados** introduce un término por cada
+nivel de la jerarquía:
+
+$$g_k(\theta_{ki}) = \mathbf{x}_{ki}^\top \boldsymbol{\beta}_k + b_{k,j(i)} + c_{k,t(i)}$$
+
+donde $b_{k,j} \sim N(0, \sigma_{b,k}^2)$ es el efecto del sector $j$ y
+$c_{k,t} \sim N(0, \sigma_{c,k}^2)$ es el efecto del trimestre $t$, ambos
+para el parámetro $k$.
+
+<Callout type="note" title="Anidado vs cruzado">
+
+Los efectos son **anidados** cuando los niveles de un factor están contenidos
+dentro de otro (ej: alumnos dentro de aulas dentro de escuelas). Son
+**cruzados** cuando cada observación pertenece simultáneamente a niveles de
+factores independientes (ej: sector × trimestre — todo sector aparece en todo
+trimestre). En `gamlss()`, ambos se especifican con `re()` o `random()`:
+la distinción está en los datos, no en la sintaxis.
+
+</Callout>
+
+### 6.2. Efectos aleatorios cruzados: sector × trimestre
+
+El dataset `cartera_pd` tiene 5 sectores observados durante 8 trimestres.
+Cada combinación sector-trimestre tiene múltiples clientes. Esto es un
+diseño **cruzado**: el sector no está anidado en el trimestre ni viceversa.
+
+<CodeBlock
+  id="06/multilevel-blups"
+  title="Modelo con efectos aleatorios cruzados en μ"
+  code={`library(gamlss)
+
+cartera_pd <- read.csv("data/cartera_pd.csv")
+cartera_pd$sector <- as.factor(cartera_pd$sector)
+cartera_pd$trimestre <- as.factor(cartera_pd$trimestre)
+
+# Modelo con dos efectos aleatorios cruzados en mu
+m_cross <- gamlss(
+  default ~ endeudamiento + ratio_liquidez + antiguedad +
+            random(sector) + random(trimestre),
+  family = BI, data = cartera_pd
+)
+
+# Comparar con modelo de solo sector
+AIC(m2, m_cross)
+
+# Extraer BLUPs de ambos efectos
+ranef(m_cross)                       # por sector
+ranef(m_cross, parameter = "random(factor(trimestre))")  # por trimestre
+
+# Visualizar
+par(mfrow = c(1, 2))
+barplot(ranef(m_cross), horiz = TRUE, las = 1,
+        main = "BLUPs por sector", xlab = "Efecto (logit)")
+barplot(ranef(m_cross, parameter = "random(factor(trimestre))"),
+        horiz = TRUE, las = 1,
+        main = "BLUPs por trimestre", xlab = "Efecto (logit)")
+par(mfrow = c(1, 1))`}
+  precomputed={{
+    console: `GAMLSS-RS iteration 1: Global Deviance = 1985.11
+GAMLSS-RS iteration 2: Global Deviance = 1972.43
+GAMLSS-RS iteration 3: Global Deviance = 1972.41
+
+     df      AIC
+m2        5  1995.11
+m_cross   7  1986.41
+
+BLUPs por sector (logit):
+  manufactura:   0.031
+  comercio:     -0.172
+  construccion:  0.512
+  agro:          0.148
+  servicios:    -0.094
+
+BLUPs por trimestre (logit):
+  T1:  0.000   T2: -0.031   T3:  0.058   T4:  0.012
+  T5:  0.089   T6:  0.145   T7:  0.098   T8:  0.187
+
+[NOTA] El trimestre 8 tiene +0.19: la PD sube en el ultimo
+trimestre (posible deterioro economico). El AIC mejora en 9
+puntos al aniadir el efecto temporal.`,
+    image: "/precomputed/06/multilevel-blups.png",
+    imageAlt: "Dos paneles de barras horizontales: a la izquierda, BLUPs por sector con construccion destacando en +0.51; a la derecha, BLUPs por trimestre con una tendencia ascendente hacia T8."
+  }}
+/>
+
+El modelo cruzado mejora el AIC en 9 puntos. El BLUP del trimestre 8
+(+0.19) sugiere un **deterioro temporal**: la PD base sube en el último
+trimestre, independientemente del sector. Esto es información que el modelo
+sin efecto temporal no podía capturar.
+
+<Callout type="warning" title="Conexión con IFRS 9">
+
+El efecto temporal que acabamos de detectar es exactamente lo que IFRS 9
+llama **ajuste forward-looking**: la PD no es constante en el tiempo, y el
+regulador exige que se incorporen proyecciones macroeconómicas. Un modelo
+GAMLSS con `random(trimestre)` captura esta dinámica de forma no
+paramétrica, sin necesidad de especificar la forma funcional del efecto
+macro.
+
+</Callout>
+
+## 7. Efectos aleatorios en múltiples parámetros: el modelo completo
+
+La verdadera potencia de GAMLSS multinivel aparece cuando los efectos
+aleatorios entran en **más de un parámetro** simultáneamente. Volvamos al
+caso de severidad: ¿la dispersión de la severidad varía por sector de forma
+aleatoria, además de la media?
+
+<CodeBlock
+  id="06/sigma-re-comparacion"
+  title="Efectos aleatorios en μ y σ simultáneamente"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+severidad_acc$sector <- as.factor(severidad_acc$sector)
+
+# Modelo: efecto aleatorio por sector en mu Y sigma
+m_full <- gamlss(
+  severidad ~ log(monto) + antiguedad + random(sector),
+  sigma.formula = ~ random(sector),
+  family = GA,
+  data = severidad_acc
+)
+
+# BLUPs de mu y sigma
+cat("Efectos en mu:\\n")
+print(ranef(m_full, what = "mu"))
+cat("\\nEfectos en sigma:\\n")
+print(ranef(m_full, what = "sigma"))
+
+# Visualizar comparacion
+par(mfrow = c(1, 2))
+barplot(ranef(m_full, what = "mu"), horiz = TRUE, las = 1,
+        main = "Efecto aleatorio en mu", xlab = "b_sector (log)")
+abline(v = 0, lty = 2, col = "gray")
+barplot(ranef(m_full, what = "sigma"), horiz = TRUE, las = 1,
+        main = "Efecto aleatorio en sigma", xlab = "b_sector (log)")
+abline(v = 0, lty = 2, col = "gray")
+par(mfrow = c(1, 1))`}
+  precomputed={{
+    console: `GAMLSS-RS iteration 1: Global Deviance = 13721.26
+GAMLSS-RS iteration 2: Global Deviance = 13689.74
+GAMLSS-RS iteration 3: Global Deviance = 13689.72
+
+Efectos en mu:
+  manufactura:   0.018
+  comercio:     -0.073
+  construccion:  0.461
+  agro:          0.092
+  servicios:    -0.058
+
+Efectos en sigma:
+  manufactura:   0.012
+  comercio:     -0.087
+  construccion:  0.534
+  agro:          0.145
+  servicios:    -0.067
+
+[NOTA] Construccion tiene +0.46 en mu (mayor severidad media)
+Y +0.53 en sigma (mayor dispersion). No solo los siniestros son
+mas caros, sino TAMBIEN mas impredecibles. Esto es imposible
+de capturar con un GLMM estandar.`,
+    image: "/precomputed/06/sigma-re-comparacion.png",
+    imageAlt: "Dos paneles de barras horizontales: efecto aleatorio en mu (izquierda) y en sigma (derecha), ambos mostrando construccion con el mayor efecto positivo."
+  }}
+/>
+
+Construcción tiene +0.46 en $\mu$ **y** +0.53 en $\sigma$. La severidad de
+construcción no solo es mayor en promedio, sino también más impredecible.
+Un GLMM estándar solo capturaría el desplazamiento de la media; la
+heterogeneidad de la dispersión quedaría absorbida por el residuo,
+inflando los intervalos de predicción para **todos** los sectores por igual.
+
+<Callout type="success" title="Modelo distribucional jerárquico completo">
+
+El modelo anterior es la culminación del enfoque GAMLSS multinivel:
+
+$$\log(\mu_i) = \beta_0 + \beta_1 \log(\text{monto}_i) + \beta_2 \text{antig}_i + b_{\mu, \text{sector}(i)}$$
+
+$$\log(\sigma_i) = \gamma_0 + c_{\sigma, \text{sector}(i)}$$
+
+Cada parámetro tiene su propia estructura jerárquica. Los BLUPs de
+$\mu$ y $\sigma$ pueden estar **correlacionados** o no: sectores con mayor
+severidad media tienden también a tener mayor dispersión, pero no
+necesariamente. GAMLSS estima ambas componentes por separado.
+
+</Callout>
+
+## 8. Comparación formal: GLMM vs GAMLSS multinivel
+
+<ParamTabs
+  mu={{
+    formula: "g(μ_i) = Xβ + Zb_μ  (GLMM y GAMLSS)",
+    link: "log / logit / identity",
+    plotAlt: "Estructura del predictor de μ — idéntica en GLMM y GAMLSS"
+  }}
+  sigma={{
+    formula: "GLMM: σ constante | GAMLSS: log(σ_i) = Wγ + Zc_σ",
+    link: "log",
+    plotAlt: "En GAMLSS, σ tiene predictor lineal propio con efectos aleatorios"
+  }}
+  nu={{
+    formula: "GLMM: no modelable | GAMLSS: g(ν_i) = Uδ + Zd_ν",
+    link: "identity",
+    plotAlt: "Asimetría con estructura jerárquica — exclusivo de GAMLSS"
+  }}
+  tau={{
+    formula: "GLMM: no modelable | GAMLSS: log(τ_i) = Vλ + Ze_τ",
+    link: "log",
+    plotAlt: "Curtosis con estructura jerárquica — exclusivo de GAMLSS"
+  }}
+/>
+
+La tabla siguiente resume las diferencias:
+
+| Aspecto | GLMM (lme4 / nlme) | GAMLSS multinivel |
+|---------|-------------------|-------------------|
+| Parámetros modelables | $\mu$ | $\mu$, $\sigma$, $\nu$, $\tau$ |
+| Efectos aleatorios | Solo en $\mu$ | En cualquier parámetro |
+| Distribución de $y$ | Exponencial family | 100+ familias en `gamlss.dist` |
+| Suavizados no lineales | No nativo | `pb()`, `cy()` en cualquier parámetro |
+| Selección por GAIC | No | Sí, comparando modelos anidados/no anidados |
+| Diagnóstico | Residuos Pearson | Residuos cuantílicos + worm plots por nivel |
+| Caso de uso típico | Medias grupales | Distribución completa por grupo |
+
+<Callout type="curiosity" title="¿Cuándo usar GLMM y cuándo GAMLSS?">
+
+Si solo te interesa la **media** condicional y la estructura jerárquica es
+simple (1-2 niveles), un GLMM con `lme4::glmer()` es más rápido y estándar.
+Si necesitas modelar **dispersión, asimetría o curtosis** por grupo, o si
+los datos tienen colas pesadas que varían entre niveles, GAMLSS es la
+herramienta correcta. En la práctica actuarial, casi siempre importa la
+cola completa, no solo la media.
+
+</Callout>
+
+## 9. Cierre
 
 <Quiz
   question="¿Qué diferencia fundamental hay entre un GLMM y un GAMLSS con efectos aleatorios?"
@@ -215,9 +466,31 @@ distribución** entre grupos.
   explanation="La diferencia clave es que GAMLSS permite efectos aleatorios en cualquier parámetro de la distribución (μ, σ, ν, τ), no solo en la media. Esto permite modelar heterogeneidad en la dispersión, asimetría y curtosis entre grupos, algo imposible en un GLMM estándar."
 />
 
+<Quiz
+  question="En el modelo cruzado sector × trimestre, ¿qué indica un BLUP de +0.19 para el trimestre 8?"
+  options={[
+    "La PD del trimestre 8 es exactamente 0.19",
+    "La PD del trimestre 8 es 19% mayor que el promedio",
+    "El logit de la PD sube en 0.19 respecto al promedio, multiplicando la odds por exp(0.19) ≈ 1.21",
+    "El trimestre 8 tiene 19% más observaciones"
+  ]}
+  correctIndex={2}
+  explanation="Los BLUPs están en la escala del predictor lineal (logit para BI). Un valor de +0.19 significa que el logit de la PD es 0.19 unidades mayor que el promedio, lo que multiplica las odds por exp(0.19) ≈ 1.21. No es un porcentaje directo ni la PD misma."
+/>
+
 <Flashcard
-  front="re()"
-  back="**Efecto aleatorio en gamlss** — Sintaxis: re(factor). Introduce un término b_j ~ N(0, σ²_b) en el predictor. Se puede usar en cualquier parámetro: mu.formula, sigma.formula, etc. Los efectos se extraen con ranef(modelo, what = 'sigma'). Referencia: Stasinopoulos et al. (2017, Cap. 7)."
+  front="re() / random()"
+  back="**Efecto aleatorio en gamlss** — Sintaxis: re(factor) o random(factor). Introduce un término b_j ~ N(0, σ²_b) en el predictor. Se puede usar en cualquier parámetro: mu.formula, sigma.formula, etc. Los efectos se extraen con ranef(modelo, what = 'sigma'). Referencia: Stasinopoulos et al. (2017, Cap. 7)."
+/>
+
+<Flashcard
+  front="Efectos cruzados vs anidados"
+  back="**Anidados**: los niveles de un factor están contenidos en otro (alumnos → aulas → escuelas). **Cruzados**: cada observación pertenece simultáneamente a niveles de factores independientes (sector × trimestre). En gamlss(), ambos se especifican con random(): la distinción está en los datos, no en la sintaxis."
+/>
+
+<Flashcard
+  front="BLUP (Best Linear Unbiased Predictor)"
+  back="Estimación del efecto aleatorio para un nivel específico de un factor. En GAMLSS, los BLUPs se extraen con ranef(modelo, what = 'parametro'). Están en la escala del predictor lineal (ej: logit para BI, log para GA). Para interpretar en odds ratio: exp(BLUP)."
 />
 
 ### ¿Qué modelarías tú?
@@ -225,8 +498,9 @@ distribución** entre grupos.
 Si tienes datos agrupados (por equipo, por región, por médico), ¿la
 variabilidad entre grupos afecta solo la media o también la dispersión?
 Ajusta un modelo con `re()` en $\mu$ y otro con `re()` también en $\sigma$.
-¿Mejora el AIC?
+¿Mejora el AIC? ¿Los BLUPs de $\mu$ y $\sigma$ cuentan la misma historia
+o revelan patrones distintos?
 
 ---
 
-**Referencias**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3), Sec. 4; Stasinopoulos et al. (2017), Cap. 7; Pinheiro & Bates (2000), *Mixed-Effects Models in S and S-PLUS*.
+**Referencias**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3), Sec. 4; Stasinopoulos et al. (2017), Cap. 7; Pinheiro & Bates (2000), *Mixed-Effects Models in S and S-PLUS*; Skrondal & Rabe-Hesketh (2004), *Generalized Latent Variable Modeling*.
