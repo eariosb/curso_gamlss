@@ -192,19 +192,25 @@ save_png(file.path(out_base, "06", "pd-efecto-aleatorio.png"), {
 })
 
 # 06/multilevel-blups.png — BLUPs por sector y trimestre (efectos cruzados)
+# En GAMLSS, random() no soporta ranef(). Extraemos efectos como:
+#   b_j = mean(fitted_j) - mean(fitted_overall)  (en escala respuesta)
+# Para BI (logit), usamos predict(type='link') y restamos el intercepto.
 save_png(file.path(out_base, "06", "multilevel-blups.png"), {
   m_cross <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad +
                       random(factor(sector)) + random(factor(trimestre)),
                     family = BI, data = cartera_pd)
+  # Efecto por sector: fitted en escala link, menos intercepto
+  fitted_link <- predict(m_cross, type = "link")
+  overall_mu <- mean(fitted_link)
+  re_sector <- tapply(fitted_link, cartera_pd$sector, mean) - overall_mu
+  re_trim <- tapply(fitted_link, cartera_pd$trimestre, mean) - overall_mu
   par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
-  re_sector <- ranef(m_cross, what = "mu")
-  re_trim <- ranef(m_cross, what = "mu", parameter = "random(factor(trimestre))")
   barplot(re_sector, horiz = TRUE, las = 1, col = COL_PRIMARY,
-          main = "BLUPs por sector", xlab = "Efecto aleatorio (logit)",
+          main = "Efecto por sector", xlab = "Desviacion del logit",
           names.arg = levels(cartera_pd$sector), cex.names = 0.8)
   abline(v = 0, lty = 2, col = COL_MUTED)
   barplot(re_trim, horiz = TRUE, las = 1, col = COL_ACCENT,
-          main = "BLUPs por trimestre", xlab = "Efecto aleatorio (logit)",
+          main = "Efecto por trimestre", xlab = "Desviacion del logit",
           names.arg = paste0("T", levels(cartera_pd$trimestre)), cex.names = 0.8)
   abline(v = 0, lty = 2, col = COL_MUTED)
   par(mfrow = c(1, 1))
@@ -215,15 +221,18 @@ save_png(file.path(out_base, "06", "sigma-re-comparacion.png"), {
   m_sigma <- gamlss(severidad ~ log(monto) + antiguedad + random(factor(sector)),
                     sigma.formula = ~ random(factor(sector)),
                     family = GA, data = severidad)
-  re_mu <- ranef(m_sigma, what = "mu")
-  re_sigma <- ranef(m_sigma, what = "sigma")
+  # Extraer efectos: desviacion del fitted por sector vs promedio
+  fitted_mu <- predict(m_sigma, type = "link")
+  fitted_sigma <- predict(m_sigma, what = "sigma", type = "link")
+  re_mu <- tapply(fitted_mu, severidad$sector, mean) - mean(fitted_mu)
+  re_sigma <- tapply(fitted_sigma, severidad$sector, mean) - mean(fitted_sigma)
   par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
   barplot(re_mu, horiz = TRUE, las = 1, col = COL_PRIMARY,
-          main = "Efecto aleatorio en μ", xlab = "b_sector (log)",
+          main = "Efecto en μ", xlab = "Desviacion (log)",
           names.arg = levels(severidad$sector), cex.names = 0.8)
   abline(v = 0, lty = 2, col = COL_MUTED)
   barplot(re_sigma, horiz = TRUE, las = 1, col = COL_ACCENT,
-          main = "Efecto aleatorio en σ", xlab = "b_sector (log)",
+          main = "Efecto en σ", xlab = "Desviacion (log)",
           names.arg = levels(severidad$sector), cex.names = 0.8)
   abline(v = 0, lty = 2, col = COL_MUTED)
   par(mfrow = c(1, 1))
