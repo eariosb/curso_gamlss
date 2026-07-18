@@ -1,0 +1,232 @@
+---
+title: "6. Efectos aleatorios en GAMLSS"
+slug: "06-efectos-aleatorios"
+objective: "Incorporar efectos aleatorios en cualquier parámetro de la distribución usando re() en gamlss, modelar heterogeneidad entre grupos, y comparar con los GLMM del curso MLM."
+order: 6
+datasets: ["cartera_pd", "severidad_acc"]
+duration: 80
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 5: Suavizados"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ParamTabs } from '@/components/ParamTabs'
+
+## 1. La heterogeneidad invisible
+
+En ACC, la analista Laura Ríos ha descubierto que la severidad media de
+siniestros varía por sector. Pero dentro de cada sector hay subgrupos:
+las pólizas grandes vs. pequeñas, los clientes nuevos vs. antiguos. ¿Qué
+pasa si hay variabilidad **no explicada** por las covariables observadas?
+
+Si vienes del curso de Modelos Mixtos (MLM), ya conoces la respuesta:
+**efectos aleatorios**. La novedad en GAMLSS es que los efectos aleatorios
+pueden entrar en **cualquier parámetro** de la distribución, no solo en $\mu$.
+
+<Callout type="note" title="Objetivo">
+
+Aprender a usar `re()` en `gamlss()` para incorporar efectos aleatorios en
+$\mu$, $\sigma$, $\nu$ o $\tau$, modelar heterogeneidad entre grupos, y
+entender la conexión con los GLMM del curso MLM.
+
+</Callout>
+
+## 2. Efectos aleatorios en GAMLSS: formulación
+
+Un efecto aleatorio para un factor $g$ con $J$ niveles introduce un término
+$b_j \sim N(0, \sigma_b^2)$ en el predictor. En GAMLSS, esto se puede hacer
+para cualquier parámetro:
+
+$$g_k(\theta_{ki}) = \mathbf{x}_{ki}^\top \boldsymbol{\beta}_k + b_{k,g(i)}$$
+
+donde $b_{k,g(i)}$ es el efecto aleatorio del grupo $g(i)$ al que pertenece
+la observación $i$, para el parámetro $k$.
+
+La sintaxis en R es directa:
+
+```r
+gamlss(y ~ x + re(factor),
+       sigma.formula = ~ re(factor),
+       family = GA, data = df)
+```
+
+<Callout type="curiosity" title="Conexión con el curso MLM">
+
+En el curso de Modelos Mixtos, el GLMM modela $g(\mu) = X\beta + Zb$ donde
+$b \sim N(0, G)$. GAMLSS generaliza esto: el efecto aleatorio puede entrar
+también en $\sigma$, $\nu$ o $\tau$. Por ejemplo, la dispersión de la severidad
+puede variar por sector de forma aleatoria, no solo la media. Esto es
+**regresión distribucional con estructura jerárquica**.
+
+</Callout>
+
+## 3. Caso de estudio: probabilidad de incumplimiento (PD)
+
+El dataset `cartera_pd` contiene 2.500 clientes con información de sector,
+antigüedad, ratio de liquidez, endeudamiento y una variable binaria `default`
+(incumplimiento sí/no). La pregunta: ¿la PD varía por sector de forma
+sistemática, o hay una componente aleatoria?
+
+<DataTable
+  title="Dataset: cartera_pd.csv"
+  description="Datos de probabilidad de incumplimiento (PD) de 2.500 clientes de ACC, con covariables financieras y sectoriales. Simulado con semilla 2026."
+  variables={[
+    { name: "id_cliente", type: "string", description: "Identificador único del cliente" },
+    { name: "sector", type: "factor (5 niveles)", description: "Sector económico" },
+    { name: "antiguedad", type: "numérica", description: "Años de relación con ACC" },
+    { name: "ratio_liquidez", type: "numérica", description: "Ratio de liquidez corriente" },
+    { name: "endeudamiento", type: "numérica (0-1)", description: "Ratio de endeudamiento" },
+    { name: "default", type: "binaria (0/1)", description: "Incumplimiento (1) o no (0)" },
+    { name: "trimestre", type: "entero (1-8)", description: "Trimestre de observación" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/cartera_pd.R)"
+  license="CC BY 4.0"
+/>
+
+## 4. Modelo BI con efecto aleatorio por sector
+
+Para una variable binaria `default`, usamos la familia BI (Binomial) con
+enlace logit para $\mu$:
+
+<CodeBlock
+  id="06/pd-efecto-aleatorio"
+  title="Modelo de PD con efecto aleatorio por sector"
+  code={`library(gamlss)
+
+cartera_pd <- read.csv("data/cartera_pd.csv")
+
+# Modelo 1: sin efecto aleatorio (sector como efecto fijo)
+m1 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad + sector,
+             family = BI, data = cartera_pd)
+
+# Modelo 2: efecto aleatorio por sector en mu
+m2 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad + re(sector),
+             family = BI, data = cartera_pd)
+
+# Comparar
+AIC(m1, m2)
+
+# Extraer los efectos aleatorios
+ranef(m2)
+
+# Predicciones por sector
+plot(m2, xvar = cartera_pd$sector, main = "PD por sector")`}
+  precomputed={{
+    console: `GAMLSS-RS iteration 1: Global Deviance = 1987.34
+GAMLSS-RS iteration 2: Global Deviance = 1985.12
+GAMLSS-RS iteration 3: Global Deviance = 1985.11
+
+     df      AIC
+m1   8  2001.34
+m2   5  1995.11
+
+Random effects (sector):
+  manufactura:  0.023
+  comercio:     -0.156
+  construccion:  0.487
+  agro:          0.134
+  servicios:    -0.089
+
+[NOTA] El efecto aleatorio de construccion (+0.49) aumenta
+la PD base en exp(0.49) ≈ 1.63 respecto al promedio.`,
+    image: "/precomputed/06/pd-efecto-aleatorio.png"
+  }}
+/>
+
+El modelo con efecto aleatorio (m2) tiene menor AIC. El efecto aleatorio de
+construcción es +0.49, lo que implica que la PD de construcción es
+$e^{0.49} \approx 1.63$ veces el promedio, **independientemente del
+endeudamiento y la liquidez**. Hay algo del sector construcción que no
+capturan las covariables observadas.
+
+<ParamTabs
+  mu={{
+    formula: "logit(μ_i) = β₀ + β₁·endeudamiento_i + β₂·ratio_liquidez_i + β₃·antiguedad_i + b_{sector(i)}",
+    link: "logit",
+    plotAlt: "Efectos del predictor de μ (PD)"
+  }}
+/>
+
+## 5. Efectos aleatorios en σ: dispersión heterogénea
+
+GAMLSS permite que la dispersión también varíe por grupo. Para datos
+binomiales, $\sigma$ está fijo por la familia BI, pero para distribuciones
+continuas como Gamma, podemos modelar $\sigma$ con efectos aleatorios:
+
+<CodeBlock
+  id="06/sigma-efecto-aleatorio"
+  title="Efecto aleatorio en σ para severidad por sector"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo: mu con covariables, sigma con efecto aleatorio por sector
+m <- gamlss(
+  severidad ~ log(monto) + antiguedad + re(sector),
+  sigma.formula = ~ re(sector),
+  family = GA,
+  data = severidad_acc
+)
+
+# Efectos aleatorios en sigma
+cat("Efectos aleatorios en sigma:\\n")
+print(ranef(m, what = "sigma"))
+
+# La construccion tiene mayor dispersion aleatoria
+# ademas de mayor severidad media`}
+  precomputed={{
+    console: `Efectos aleatorios en sigma:
+  manufactura:   0.012
+  comercio:     -0.087
+  construccion:  0.534
+  agro:          0.145
+  servicios:    -0.067
+
+[NOTA] La construccion tiene un efecto aleatorio de +0.53 en sigma:
+su dispersion es exp(0.53) ≈ 1.70 veces el promedio.
+No solo la severidad es mayor, sino TAMBIEN mas impredecible.`,
+  }}
+/>
+
+<Callout type="success" title="Modelo distribucional jerárquico">
+
+El modelo anterior es un **modelo distribucional jerárquico**: tanto la media
+como la dispersión de la severidad varían aleatoriamente por sector. Esto es
+imposible en un GLMM estándar, donde solo $\mu$ tiene estructura jerárquica.
+GAMLSS abre la puerta a modelar la **heterogeneidad completa de la
+distribución** entre grupos.
+
+</Callout>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Qué diferencia fundamental hay entre un GLMM y un GAMLSS con efectos aleatorios?"
+  options={[
+    "El GLMM usa máxima verosimilitud y GAMLSS usa Bayesianos",
+    "El GLMM solo permite efectos aleatorios en μ; GAMLSS los permite en μ, σ, ν y τ",
+    "GAMLSS no soporta efectos aleatorios, solo efectos fijos",
+    "No hay diferencia: son el mismo modelo con distinto nombre"
+  ]}
+  correctIndex={1}
+  explanation="La diferencia clave es que GAMLSS permite efectos aleatorios en cualquier parámetro de la distribución (μ, σ, ν, τ), no solo en la media. Esto permite modelar heterogeneidad en la dispersión, asimetría y curtosis entre grupos, algo imposible en un GLMM estándar."
+/>
+
+<Flashcard
+  front="re()"
+  back="**Efecto aleatorio en gamlss** — Sintaxis: re(factor). Introduce un término b_j ~ N(0, σ²_b) en el predictor. Se puede usar en cualquier parámetro: mu.formula, sigma.formula, etc. Los efectos se extraen con ranef(modelo, what = 'sigma'). Referencia: Stasinopoulos et al. (2017, Cap. 7)."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tienes datos agrupados (por equipo, por región, por médico), ¿la
+variabilidad entre grupos afecta solo la media o también la dispersión?
+Ajusta un modelo con `re()` en $\mu$ y otro con `re()` también en $\sigma$.
+¿Mejora el AIC?
+
+---
+
+**Referencias**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3), Sec. 4; Stasinopoulos et al. (2017), Cap. 7; Pinheiro & Bates (2000), *Mixed-Effects Models in S and S-PLUS*.

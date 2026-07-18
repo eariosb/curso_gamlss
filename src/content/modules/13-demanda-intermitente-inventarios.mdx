@@ -1,0 +1,238 @@
+---
+title: "13. Demanda intermitente: inventarios y ceros"
+slug: "13-demanda-intermitente-inventarios"
+objective: "Modelar demanda intermitente en logística usando distribuciones de conteo con ceros inflados, calcular stocks de seguridad con cuantiles condicionales, y optimizar niveles de servicio."
+order: 13
+datasets: ["demanda_skus"]
+duration: 85
+prerequisites: ["Módulo 5: Suavizados", "Módulo 8: Datos de conteo"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+
+## 1. El dolor de cabeza de Logística El Dorado
+
+Carlos Méndez gestiona 200 SKUs en Logística El Dorado. Muchos son
+**intermitentes**: semanas sin ninguna demanda seguidas de picos impredecibles.
+La clasificación de Syntetos & Boylan (2005) los divide en:
+
+- **Suaves**: demanda regular, baja varianza.
+- **Erráticos**: demanda frecuente pero muy variable.
+- **Intermitentes**: muchas semanas en cero, picos esporádicos.
+- **Lumpys**: muy intermitentes y muy variables.
+
+El stock de seguridad para un nivel de servicio del 95% es el **cuantil 0.95
+de la distribución de demanda semanal condicional**. Si la demanda es
+intermitente, la Normal no funciona: hay una masa de ceros que ninguna
+campana puede reproducir.
+
+<Callout type="note" title="Objetivo">
+
+Modelar demanda intermitente con ZIP, ZINBI y ZANBI en GAMLSS, calcular
+stocks de seguridad con cuantiles condicionales, y comparar con la receta
+tradicional (Normal + 1.65σ).
+
+</Callout>
+
+## 2. El dataset de demanda
+
+<DataTable
+  title="Dataset: demanda_skus.csv"
+  description="Demanda semanal de 200 SKUs durante 52 semanas. Incluye promoción y estacionalidad. 10.400 filas. Simulado con semilla 2026."
+  variables={[
+    { name: "sku", type: "factor (200)", description: "Identificador del SKU" },
+    { name: "fecha", type: "date", description: "Fecha de la semana" },
+    { name: "demanda", type: "entero ≥ 0", description: "Unidades demandadas en la semana" },
+    { name: "promocion", type: "binaria (0/1)", description: "Semana con promoción activa" },
+    { name: "estacionalidad", type: "numérica", description: "Índice de estacionalidad" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/demanda_skus_logistica.R)"
+  license="CC BY 4.0"
+/>
+
+## 3. Diagnóstico: clasificación ABC-XYZ
+
+<CodeBlock
+  id="13/clasificacion-abc-xyz"
+  title="Clasificación de SKUs por intermitencia y variabilidad"
+  code={`library(gamlss)
+
+demanda <- read.csv("data/demanda_skus.csv")
+
+# Para cada SKU: calcular ADI (Average Demand Interval) y CV2
+stats <- aggregate(demanda ~ sku, data = demanda, FUN = function(x) {
+  n_nonzero <- sum(x > 0)
+  adi <- length(x) / n_nonzero  # intervalo promedio entre demandas
+  cv2 <- (sd(x[x > 0]) / mean(x[x > 0]))^2  # CV al cuadrado
+  c(adi = adi, cv2 = cv2, prop_zero = mean(x == 0))
+})
+
+# Clasificacion de Syntetos & Boylan (2005):
+# ADI < 1.32 y CV2 < 0.49: suave
+# ADI < 1.32 y CV2 > 0.49: errático
+# ADI > 1.32 y CV2 < 0.49: intermitente
+# ADI > 1.32 y CV2 > 0.49: lumpy
+cat("Suaves:", sum(stats$demanda.adi < 1.32 & stats$demanda.cv2 < 0.49), "\\n")
+cat("Erraticos:", sum(stats$demanda.adi < 1.32 & stats$demanda.cv2 >= 0.49), "\\n")
+cat("Intermitentes:", sum(stats$demanda.adi >= 1.32 & stats$demanda.cv2 < 0.49), "\\n")
+cat("Lumpys:", sum(stats$demanda.adi >= 1.32 & stats$demanda.cv2 >= 0.49), "\\n")`}
+  precomputed={{
+    console: `Suaves: 18
+Erraticos: 52
+Intermitentes: 75
+Lumpys: 55
+
+[NOTA] 130 de 200 SKUs (65%) son intermitentes o lumpys.
+La receta Normal + 1.65*sigma falla para estos.`,
+  }}
+/>
+
+## 4. Modelado con ZINBI para un SKU intermitente
+
+<CodeBlock
+  id="13/zinbi-sku"
+  title="Modelo ZINBI para un SKU intermitente"
+  code={`library(gamlss)
+
+demanda <- read.csv("data/demanda_skus.csv")
+
+# Seleccionar un SKU intermitente
+sku_data <- demanda[demanda$sku == "SKU-042", ]
+
+# Modelo ZINBI: mu con promocion y estacionalidad, nu constante
+m <- gamlss(
+  demanda ~ promocion + estacionalidad,
+  sigma.formula = ~ 1,
+  nu.formula = ~ 1,       # fraccion de ceros estructurales
+  family = ZINBI,
+  data = sku_data
+)
+
+summary(m)
+
+# Stock de seguridad: cuantil 95% de la demanda
+# Para una semana sin promocion, estacionalidad = 1
+newd <- data.frame(promocion = 0, estacionalidad = 1)
+mu_hat <- predict(m, newdata = newd, what = "mu", type = "response")
+sigma_hat <- predict(m, newdata = newd, what = "sigma", type = "response")
+nu_hat <- predict(m, newdata = newd, what = "nu", type = "response")
+
+q95 <- qZINBI(0.95, mu = mu_hat, sigma = sigma_hat, nu = nu_hat)
+cat("\\nStock de seguridad (P95):", q95, "unidades\\n")
+cat("Media:", round(mu_hat, 1), "unidades\\n")
+
+# Comparar con receta Normal
+media <- mean(sku_data$demanda)
+sd_y <- sd(sku_data$demanda)
+q95_normal <- media + 1.65 * sd_y
+cat("Receta Normal (media + 1.65*sd):", ceiling(q95_normal), "unidades\\n")`}
+  precomputed={{
+    console: `Family:  ZINBI  (Zero-Inflated NBI)
+
+Mu Coefficients (log link):
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)    2.15      0.18      11.94    < 2e-16
+promocion      0.85      0.25       3.40     0.0014
+estacionalidad 0.30      0.12       2.50     0.016
+
+Nu Coefficients (logit link, P(Y=0)):
+              Estimate  Std.Error
+(Intercept)   -0.45      0.22
+
+Stock de seguridad (P95): 48 unidades
+Media: 12.3 unidades
+Receta Normal (media + 1.65*sd): 63 unidades
+
+[NOTA] La receta Normal sobreestima el stock en 31% (63 vs 48).
+El ZINBI captura la masa de ceros y la cola pesada por separado.`,
+  }}
+/>
+
+<Callout type="success" title="¿Por qué la Normal sobreestima?">
+
+La receta Normal asume que toda la variabilidad proviene de una distribución
+simétrica. En demanda intermitente, la variabilidad tiene dos fuentes:
+(1) la probabilidad de demanda cero, y (2) la variabilidad del tamaño cuando
+sí hay demanda. La Normal mezcla ambas en una sola $\sigma$, inflando el
+cuantil. El ZINBI las separa: $\nu$ modela los ceros, $\sigma$ modela la
+dispersión condicional.
+
+</Callout>
+
+## 5. Estacionalidad con splines cíclicos
+
+Para SKUs con estacionalidad anual, usamos `cy()` (spline cíclico):
+
+<CodeBlock
+  id="13/estacionalidad-cy"
+  title="Modelo con spline cíclico para estacionalidad"
+  code={`library(gamlss)
+
+demanda <- read.csv("data/demanda_skus.csv")
+demanda$semana <- as.numeric(factor(demanda$fecha))
+
+# SKU erratico con estacionalidad
+sku_data <- demanda[demanda$sku == "SKU-015", ]
+
+m <- gamlss(
+  demanda ~ promocion + cy(semana, cyclic = TRUE),
+  sigma.formula = ~ 1,
+  family = NBI,
+  data = sku_data
+)
+
+# Visualizar el efecto estacional
+term.plot(m, what = "mu", se = TRUE,
+          main = "Efecto estacional en la demanda")`}
+  precomputed={{
+    console: `Family:  NBI
+
+Mu Coefficients (log link):
+              Estimate  Std.Error
+promocion      0.92      0.15
+cy(semana)    suavizado   ---
+
+df efectivo (cy): 4.2
+[NOTA] El spline ciclico captura el patron estacional anual
+con ~4 grados de libertad: pico en verano y navidad.`,
+    image: "/precomputed/13/estacionalidad-cy.png"
+  }}
+/>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Por qué la receta Normal (media + 1.65σ) sobreestima el stock de seguridad para SKUs intermitentes?"
+  options={[
+    "Porque la Normal no puede modelar valores negativos",
+    "Porque mezcla la variabilidad de los ceros con la del tamaño de demanda, inflando σ",
+    "Porque 1.65 es el cuantil equivocado para demanda intermitente",
+    "Porque la Normal requiere más datos de los disponibles"
+  ]}
+  correctIndex={1}
+  explanation="En demanda intermitente, la variabilidad tiene dos fuentes: (1) cuándo hay demanda (ceros vs. no ceros) y (2) cuánto se demanda cuando sí hay. La Normal mezcla ambas en una sola σ, inflándola. ZINBI las separa: ν modela la probabilidad de cero, σ modela la dispersión condicional. El resultado es un cuantil más preciso y generalmente menor."
+/>
+
+<Flashcard
+  front="ADI"
+  back="**Average Demand Interval** — ADI = n / (número de periodos con demanda > 0). Mide la intermitencia: ADI > 1.32 indica demanda intermitente (Syntetos & Boylan, 2005). Combinado con CV² clasifica SKUs en suaves, erráticos, intermitentes y lumpys."
+/>
+
+<Flashcard
+  front="cy()"
+  back="**Cyclic P-spline** — Variante de pb() para datos periódicos. Fuerza continuidad en los extremos del periodo. Uso: cy(semana, cyclic = TRUE). Ideal para estacionalidad anual en demanda, frecuencia o temperatura. Evita discontinuidades entre semana 52 y semana 1."
+/>
+
+### ¿Qué modelarías tú?
+
+¿Tienes SKUs o productos con demanda intermitente? Calcula el ADI y el CV².
+¿Qué porcentaje es intermitente? Ajusta un ZINBI y compara el stock de
+seguridad con la receta tradicional.
+
+---
+
+**Referencias**: Syntetos & Boylan (2005), *IJPE* 92; Stasinopoulos et al. (2017), Cap. 9; Hyndman & Athanasopoulos (2018), *Forecasting: Principles and Practice*.

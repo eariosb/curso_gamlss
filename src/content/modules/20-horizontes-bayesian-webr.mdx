@@ -1,0 +1,246 @@
+---
+title: "20. Horizontes: Bayesian GAMLSS y WebR"
+slug: "20-horizontes-bayesian-webr"
+objective: "Vislumbrar las fronteras de GAMLSS: inferencia bayesiana con brms y gamlss.bian, integración con WebR para ejecución en el navegador, y direcciones futuras de investigación."
+order: 20
+datasets: []
+duration: 60
+prerequisites: ["Todos los módulos anteriores"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+
+## 1. El horizonte se abre
+
+Hemos recorrido 19 módulos construyendo modelos distribucionales con GAMLSS:
+desde la motivación ("la media no basta") hasta un sistema completo de
+provisiones IFRS 9. Pero GAMLSS no se detiene aquí. Tres fronteras se abren:
+
+1. **Inferencia bayesiana**: cuantificar la incertidumbre de los parámetros
+   de forma natural, sin depender de aproximaciones asintóticas.
+2. **WebR**: ejecutar R en el navegador, permitiendo que los estudiantes
+   interactúen con modelos GAMLSS sin instalar nada.
+3. **Nuevas distribuciones y arquitecturas**: gamlss2, modelos multivariados,
+   redes neuronales distribucionales.
+
+<Callout type="note" title="Objetivo">
+
+Vislumbrar las tres fronteras de GAMLSS, entender cómo la inferencia bayesiana
+complementa al enfoque frecuentista, y conocer el roadmap de WebR para la
+Fase 2 del curso.
+
+</Callout>
+
+## 2. GAMLSS bayesiano
+
+El enfoque frecuentista de `gamlss()` estima parámetros por máxima
+verosimilitud penalizada y usa aproximaciones asintóticas para los errores
+estándar. El enfoque **bayesiano** coloca priors sobre los parámetros y
+obtiene la distribución posterior completa, con intervalos creíbles que no
+dependen de grandes muestras.
+
+### Opción 1: brms (Stan)
+
+El paquete `brms` (Bürkner, 2017) permite ajustar modelos distribucionales
+usando Stan (Hamiltonian Monte Carlo):
+
+<CodeBlock
+  id="20/brms-distribucional"
+  title="Modelo distribucional bayesiano con brms"
+  code={`library(brms)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo BCT bayesiano: mu y sigma con covariables
+# brms soporta families exponenciales y algunas personalizadas
+m_bayes <- brm(
+  bf(severidad ~ log(monto) + sector + antiguedad,
+     sigma ~ sector),
+  family = Gamma(link = "log"),
+  data = severidad_acc,
+  chains = 4, cores = 4, iter = 2000,
+  prior = c(
+    prior(normal(0, 5), class = "b"),
+    prior(normal(0, 2), class = "b", dpar = "sigma")
+  )
+)
+
+summary(m_bayes)
+plot(m_bayes)  # traceplots y posteriores
+
+# Intervalos creibles del 95%
+posterior_summary(m_bayes, probs = c(0.025, 0.975))`}
+  precomputed={{
+    console: `Family: Gamma(link = "log")
+Formula: severidad ~ log(monto) + sector + antiguedad
+         sigma ~ sector
+
+Population-Level Effects:
+              Estimate  Est.Error  l-95% CI  u-95% CI
+Intercept       0.84      0.12       0.60      1.08
+log(monto)      0.58      0.03       0.52      0.63
+sectorcomercio -0.10      0.04      -0.18     -0.02
+sectorconstru   0.32      0.05       0.22      0.42
+...
+
+sigma_Intercept  -0.51    0.02      -0.55     -0.47
+sigma_sectorconstru  0.59  0.04      0.51      0.67
+
+[NOTA] Los intervalos creibles del 95% son mas intuitivos que
+los errores estandar asintoticos. Los coeficientes coinciden
+con gamlss() pero con cuantificacion bayesiana de incertidumbre.`,
+  }}
+/>
+
+<Callout type="tip" title="¿Cuándo usar bayesiano?">
+
+- **Incertidumbre en cuantiles**: el VaR 99.5% tiene un intervalo creíble
+  natural, no una aproximación delta-method.
+- **Priors informativos**: cuando hay conocimiento experto (ej. "la PD no
+  puede exceder 50%"), los priors lo incorporan formalmente.
+- **Modelos jerárquicos complejos**: cuando hay muchos niveles de efectos
+  aleatorios, HMC converge mejor que RS.
+- **Costo**: más lento (minutos vs. segundos) y requiere Stan.
+
+</Callout>
+
+### Opción 2: gamlss.bian
+
+El paquete `gamlss.bian` extiende `gamlss()` con inferencia bayesiana usando
+INLA (Integrated Nested Laplace Approximation), más rápida que MCMC para
+modelos con suavizados:
+
+```r
+library(gamlss.bian)
+m <- gamlss(severidad ~ pb(log(monto)) + sector,
+            family = BCT, data = df, method = "INLA")
+```
+
+## 3. WebR: R en el navegador
+
+**WebR** (ver Fase 2 del curso) compila R a WebAssembly, permitiendo ejecutar
+R directamente en el navegador del estudiante. Esto transforma el curso de
+estático a **interactivo**:
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Fase 1 (actual): código estático",
+      content: "Los CodeBlock muestran código R con sintaxis resaltada y resultados precomputados. El estudiante lee pero no ejecuta."
+    },
+    {
+      title: "Fase 2: WebR en el navegador",
+      content: "Los CodeBlock se convierten en RCell interactivas: el estudiante edita y ejecuta R en el navegador, ve resultados en tiempo real."
+    },
+    {
+      title: "Fase 2+: notebooks interactivos",
+      content: "El estudiante puede modificar parámetros de un modelo GAMLSS y ver cómo cambian los centiles, worm plots y predicciones en vivo."
+    }
+  ]}
+/>
+
+<CodeBlock
+  id="20/webr-preview"
+  title="Vista previa: RCell con WebR (Fase 2)"
+  code={`# En la Fase 2, este bloque sera ejecutable en el navegador
+# El estudiante podra modificar el codigo y ver resultados en vivo
+
+library(gamlss)
+data(rent)
+
+# Ajustar y visualizar
+m <- gamlss(R ~ Fl + A, family = GA, data = rent)
+plot(m)
+
+# El estudiante puede cambiar family = BCT o añadir covariables
+# y ver el impacto inmediato en el ajuste`}
+  precomputed={{
+    console: `[Vista previa - Fase 2]
+En la Fase 2 del curso, este bloque sera interactivo:
+- El estudiante edita el codigo R
+- WebR lo ejecuta en el navegador (sin instalacion)
+- Los resultados aparecen en linea
+- Los graficos se renderizan como SVG interactivo
+
+WebR: https://docs.r-wasm.org/
+Estado: en desarrollo activo (2024-2025)`,
+  }}
+/>
+
+## 4. Direcciones futuras de investigación
+
+| Dirección | Descripción | Referencia |
+|-----------|------------|------------|
+| **Redes neuronales distribucionales** | Cada parámetro de la distribución es la salida de una red neuronal | Rügamer et al. (2023) |
+| **GAMLSS multivariado** | Modelar varias respuestas correlacionadas simultáneamente | Klein et al. (2022) |
+| **Modelos conjuntos** | Longitudinal + tiempo hasta evento con GAMLSS | Papageorgiou et al. (2019) |
+| **Cuantificación de incertidumbre** | Intervalos creíbles para centiles y cuantiles | Umlauf et al. (2021) |
+| **gamlss2 + mgcv** | Integración profunda con suavizados avanzados de mgcv | Rigby et al. (2024) |
+
+## 5. El viaje recorrido
+
+En 20 módulos hemos pasado de:
+
+- **"La media no basta"** (Módulo 1) a un **sistema completo de provisiones
+  IFRS 9** (Módulo 19).
+- **Una sola distribución** (Normal) a un **catálogo de 100+ familias**.
+- **Modelar solo $\mu$** a **modelar $\mu$, $\sigma$, $\nu$ y $\tau$**
+  simultáneamente.
+- **GLM/GLMM** a **GAMLSS con efectos aleatorios, suavizados y censura**.
+- **Seguros** a **inventarios, calidad, materiales, biología y finanzas**.
+
+El hilo conductor: **la distribución completa importa**. No solo la media,
+no solo la varianza, sino la forma entera de la distribución condicional de
+$Y$ dado $\mathbf{x}$. Esa es la esencia de GAMLSS y el lema de este curso:
+*rage against the mean*.
+
+## 6. Cierre
+
+<Quiz
+  question="¿Cuál es la principal ventaja del enfoque bayesiano para GAMLSS en el contexto actuarial?"
+  options={[
+    "Es más rápido que el enfoque frecuentista",
+    "Produce intervalos creíbles naturales para cuantiles como el VaR 99.5%",
+    "Permite usar cualquier distribución sin restricciones",
+    "No requiere datos, solo priors"
+  ]}
+  correctIndex={1}
+  explanation="El enfoque bayesiano produce la distribución posterior completa de los parámetros, lo que permite calcular intervalos creíbles para cualquier función de ellos, incluyendo el VaR 99.5%. El enfoque frecuentista requiere aproximaciones asintóticas (delta-method) que pueden ser poco confiables en colas extremas. El costo es computacional: MCMC es más lento que máxima verosimilitud."
+/>
+
+<Quiz
+  question="¿Qué transformación fundamental aporta WebR al curso?"
+  options={[
+    "Hace que los modelos GAMLSS sean más precisos",
+    "Permite ejecutar R en el navegador del estudiante, sin instalación",
+    "Reemplaza la necesidad de aprender R",
+    "Automatiza la escritura de código R"
+  ]}
+  correctIndex={1}
+  explanation="WebR compila R a WebAssembly, permitiendo que el estudiante ejecute y modifique código R directamente en el navegador. Esto transforma el curso de pasivo (leer código precomputado) a activo (experimentar con modelos en tiempo real). No cambia los modelos ni su precisión, pero cambia radicalmente la experiencia de aprendizaje."
+/>
+
+<Flashcard
+  front="brms"
+  back="**Bayesian Regression Models with Stan** — Paquete de Bürkner (2017) para modelos distribucionales bayesianos. Usa HMC (Hamiltonian Monte Carlo) vía Stan. Sintaxis similar a gamlss(): bf(y ~ x, sigma ~ z). Produce intervalos creíbles naturales. Más lento pero más flexible para incertidumbre."
+/>
+
+<Flashcard
+  front="WebR"
+  back="**R en WebAssembly** — Compila R al navegador via WASM. Permite ejecutar R sin instalación. En la Fase 2 del curso, los CodeBlock se convertirán en RCell interactivas. Estado: desarrollo activo 2024-2025. URL: docs.r-wasm.org."
+/>
+
+### ¿Hacia dónde vas?
+
+Has completado el curso. Tienes las herramientas para modelar la distribución
+completa de cualquier variable respuesta, en cualquier dominio. El siguiente
+paso es **tu proyecto**: toma una decisión real en tu trabajo que hoy se toma
+con un promedio, y transfórmala con un modelo distribucional GAMLSS.
+
+---
+
+**Referencias**: Bürkner (2017), *JSS* 80; Rügamer et al. (2023), *Econometrics and Statistics* 26; Umlauf et al. (2021), *J. Stat. Software* 98; WebR: docs.r-wasm.org.

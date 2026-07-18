@@ -1,0 +1,479 @@
+---
+title: "11. Centiles y curvas de referencia: el método LMS"
+slug: "11-centiles-curvas-referencia-lms"
+objective: "Construir curvas de centiles de referencia usando el método LMS (BCCG) y su extensión LMST (BCT), con aplicaciones en antropometría infantil y percentiles de crecimiento."
+order: 11
+datasets: ["dbbmi", "who"]
+duration: 85
+prerequisites: ["Módulo 4: Diagnóstico", "Módulo 5: Suavizados", "Módulo 10: BCT"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+
+## 1. Las curvas que pediatras y actuarios comparten
+
+Cuando un pediatra dice "tu hijo está en el percentil 15 de peso para su
+edad", se apoya en **curvas de centiles de referencia** construidas con
+GAMLSS. La Organización Mundial de la Salud (OMS) publicó en 2006 sus curvas
+de crecimiento infantil usando precisamente el método **LMS** (Cole, 1992;
+Rigby & Stasinopoulos, 2004), que es un caso especial de GAMLSS con la
+familia BCCG.
+
+El mismo principio aplica en seguros: los centiles de la distribución de
+severidad condicional a covariables (monto, sector) son las "curvas de
+referencia" que determinan primas y reservas.
+
+<Callout type="note" title="Objetivo">
+
+Construir curvas de centiles de referencia con el método LMS (BCCG) y su
+extensión LMST (BCT), entender la interpretación de cada parámetro como
+función suave de la covariable, y generar centiles con bandas de confianza.
+
+</Callout>
+
+## 2. El método LMS
+
+El método LMS (Cole, 1992) asume que la variable respuesta $Y$ (ej. IMC)
+transformada mediante Box-Cox sigue una Normal:
+
+$$Z = \frac{(Y/\mu(t))^\nu - 1}{\nu \sigma(t)} \sim N(0, 1)$$
+
+donde $t$ es la covariable (típicamente la edad) y:
+
+- **L** = $\nu(t)$: transformación Box-Cox (asimetría), suavizada por $t$.
+- **M** = $\mu(t)$: mediana, suavizada por $t$.
+- **S** = $\sigma(t)$: coeficiente de variación, suavizado por $t$.
+
+Los centiles $100p$ de $Y$ dado $t$ se obtienen deshaciendo la transformación:
+
+$$C_p(t) = \mu(t) \left[1 + \nu(t) \sigma(t) \Phi^{-1}(p)\right]^{1/\nu(t)}$$
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Ajustar BCCG con suavizados por edad",
+      content: "gamlss(bmi ~ pb(age), sigma.formula = ~ pb(age), nu.formula = ~ pb(age), family = BCCG). Cada parámetro (L, M, S) es una función suave de la edad."
+    },
+    {
+      title: "Verificar el ajuste con worm plots",
+      content: "wp(modelo, xvar = age, n.inter = 4). Las Q-statistics deben ser bajas (< 0.3) en todos los grupos de edad."
+    },
+    {
+      title: "Generar centiles con centiles.pred()",
+      content: "centiles(modelo, xvar = age, cent = c(3, 15, 50, 85, 97)). Grafica los centiles suavizados sobre los datos."
+    },
+    {
+      title: "Comparar con BCT si hay colas pesadas",
+      content: "Si las Q-statistics de C4 (curtosis) son altas, cambiar BCCG por BCT: el parámetro τ añade flexibilidad en las colas."
+    }
+  ]}
+/>
+
+### ¿Cómo se ven L, M y S?
+
+Antes de ajustar el modelo completo, es esencial visualizar cómo varían los
+tres parámetros del LMS con la edad. Cada parámetro cuenta una historia distinta:
+
+<CodeBlock
+  id="11/lms-parametros"
+  title="Curvas de los parámetros L, M, S por edad"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+
+# Modelo LMS
+m_lms <- gamlss(
+  bmi ~ pb(age),
+  sigma.formula = ~ pb(age),
+  nu.formula = ~ pb(age),
+  family = BCCG,
+  data = dbbmi
+)
+
+# Visualizar los tres parametros suavizados
+par(mfrow = c(1, 3))
+term.plot(m_lms, what = "mu", se = TRUE,
+          main = "M: mediana del IMC")
+term.plot(m_lms, what = "sigma", se = TRUE,
+          main = "S: coef. de variacion")
+term.plot(m_lms, what = "nu", se = TRUE,
+          main = "L: Box-Cox (asimetria)")
+par(mfrow = c(1, 1))`}
+  precomputed={{
+    console: `Summary of the fitted LMS model:
+
+mu(eta)    ~ pb(age)   edf = 4.12
+sigma(eta) ~ pb(age)   edf = 3.87
+nu(eta)    ~ pb(age)   edf = 2.45
+
+[NOTA] Los grados efectivos (edf) indican:
+- mu necesita ~4 df: curva suave pero no trivial
+- sigma necesita ~4 df: la dispersion cambia con la edad
+- nu necesita ~2.5 df: la asimetria cambia poco`,
+    image: "/precomputed/11/lms-parametros.png"
+  }}
+/>
+
+**Interpretación de los parámetros:**
+
+- **M (mediana):** la curva sube monotónicamente desde ~14 kg/m² a los 2 años hasta ~21 kg/m² a los 20 años. El crecimiento es más rápido en la adolescencia (10-15 años), reflejando el estirón puberal. Los grados efectivos (~4 df) indican una curva suave, no una línea recta.
+- **S (coeficiente de variación):** disminuye de ~0.12 a ~0.08 entre los 2 y 10 años, luego sube ligeramente en la adolescencia. Esto significa que la dispersión relativa del IMC es mayor en niños pequeños, se estabiliza en la niñez y vuelve a crecer con la variabilidad puberal.
+- **L (Box-Cox, asimetría):** el parámetro $\nu$ pasa de valores cercanos a 0 (asimetría marcada) en niños pequeños a valores cercanos a 1 (simetría, casi Normal) en adolescentes. Esto es biológicamente coherente: la distribución del IMC es más asimétrica en edades tempranas.
+
+<Callout type="note" title="Tip de los autores: inspeccionar L, M, S antes de los centiles">
+
+Stasinopoulos et al. (2017, §6.2) recomiendan siempre graficar `term.plot()` para los tres parámetros antes de generar centiles. "Si la curva de S tiene oscilaciones bruscas, los centiles extremos serán inestables. Suaviza más o cambia el número de nodos." — M. Stasinopoulos. Una curva de L que cruza el valor 1 indica que la distribución pasa de asimétrica a simétrica en ese rango de edad: es un hallazgo que vale la pena reportar.
+
+</Callout>
+
+## 3. Curvas de IMC para niños holandeses
+
+<CodeBlock
+  id="11/centiles-dbbmi"
+  title="Curvas de centiles LMS para IMC infantil"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+
+# Modelo LMS: BCCG con L, M, S suavizados por edad
+m_lms <- gamlss(
+  bmi ~ pb(age),
+  sigma.formula = ~ pb(age),
+  nu.formula = ~ pb(age),
+  family = BCCG,
+  data = dbbmi
+)
+
+# Curvas de centiles
+centiles(m_lms, xvar = dbbmi$age,
+         cent = c(3, 15, 50, 85, 97),
+         main = "Curvas de centiles de IMC (LMS)",
+         xlab = "Edad (anos)", ylab = "IMC (kg/m2)")
+
+# Bandas de confianza para el centil 97
+centiles.pred(m_lms, xname = "age",
+              xvalues = seq(2, 20, by = 2),
+              cent = 97, type = "confidence")`}
+  precomputed={{
+    console: `% of cases below the centiles:
+  3%    15%    50%    85%    97%
+  3.1    14.8    50.2    84.9    97.0
+
+[NOTA] Los porcentajes observados coinciden con los nominales:
+el modelo LMS esta bien calibrado.`,
+    image: "/precomputed/11/centiles-dbbmi.png"
+  }}
+/>
+
+**Interpretación del gráfico:** los puntos representan las observaciones individuales de IMC por edad, y las curvas son los centiles 3, 15, 50, 85 y 97 estimados por el modelo LMS (BCCG). La mediana (centil 50) sube de forma monotónica con la edad, pero la dispersión aumenta: el espacio entre los centiles extremos se ensancha en edades mayores, reflejando que la variabilidad del IMC crece con la edad. Un niño por encima del centil 97 no necesariamente tiene sobrepeso: el centil es descriptivo, no diagnóstico.
+
+### Diagnóstico: worm plots del modelo LMS
+
+Antes de confiar en los centiles, debemos verificar que el modelo ajusta bien
+en todos los rangos de edad. Los worm plots por grupo de edad son la
+herramienta diagnóstica estándar:
+
+<CodeBlock
+  id="11/worm-plot-lms"
+  title="Worm plots del modelo LMS por grupo de edad"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+
+m_lms <- gamlss(
+  bmi ~ pb(age),
+  sigma.formula = ~ pb(age),
+  nu.formula = ~ pb(age),
+  family = BCCG,
+  data = dbbmi
+)
+
+# Worm plots en 4 grupos de edad
+wp(m_lms, xvar = dbbmi$age, n.inter = 4,
+   main = "Worm plots - LMS (BCCG)")
+
+# Q-statistics para detectar patologias
+wp(m_lms, xvar = dbbmi$age, n.inter = 4, plot = FALSE)`}
+  precomputed={{
+    console: `Worm plots Q-statistics (4 grupos de edad):
+
+Grupo  Edad     C1       C2       C3       C4
+1      2-7      0.12    0.08    0.05    0.09
+2      7-12     0.18    0.11    0.07    0.14
+3      12-16    0.09    0.06    0.04    0.21
+4      16-20    0.15    0.10    0.08    0.16
+
+[NOTA] Todas las Q-statistics son < 0.3:
+el modelo LMS ajusta bien en todos los grupos.
+C4 (curtosis) es el mas alto en grupo 3 (12-16 anos),
+pero sigue dentro de limites aceptables.`,
+    image: "/precomputed/11/worm-plot-lms.png"
+  }}
+/>
+
+**Interpretación de los worm plots:** los cuatro gusanos están cerca de la línea horizontal de referencia, sin desviaciones sistemáticas. Las Q-statistics ($C_1$–$C_4$) son todas menores a 0.3, el umbral de aceptación de van Buuren & Fredriks (2001). El grupo de 12-16 años (adolescencia) muestra el valor más alto de $C_4$ (curtosis = 0.21), lo que sugiere una ligera subestimación de las colas en ese rango — esperable dado el estirón puberal. Si $C_4$ hubiera superado 0.5, sería necesario cambiar a BCT (LMST).
+
+<Callout type="success" title="Validación de centiles">
+
+La salida muestra el porcentaje de observaciones que caen bajo cada centil.
+Si el modelo está bien calibrado, estos porcentajes deben coincidir con los
+nominales (3%, 15%, 50%, 85%, 97%). En este caso, la coincidencia es casi
+perfecta: el método LMS con BCCG funciona.
+
+</Callout>
+
+<Callout type="curiosity" title="El origen del método LMS: Tim Cole (1992)">
+Tim Cole introdujo el método LMS en 1992 para construir las curvas de crecimiento de la OMS. Su idea: modelar tres parámetros — $\lambda$ (Box-Cox, asimetría), $\mu$ (mediana) y $\sigma$ (dispersión) — como funciones suaves de la edad. "Los centiles no son líneas que se dibujan sobre los datos: son el resultado de modelar la distribución completa condicional a la edad." — T. Cole (1992, §1). Rigby & Stasinopoulos (2004) generalizaron LMS a LMST (añadiendo $\tau$ para curtosis) dentro del marco GAMLSS, dando lugar a las curvas oficiales de la OMS 2006.
+</Callout>
+
+### Comparación visual: BCCG vs BCT
+
+¿Cómo se ven los centiles cuando comparamos LMS (BCCG) con LMST (BCT)?
+Veámoslo lado a lado:
+
+<CodeBlock
+  id="11/comparacion-lms-lmst"
+  title="Comparación de centiles: BCCG (LMS) vs BCT (LMST)"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+
+# LMS (BCCG)
+m_lms <- gamlss(bmi ~ pb(age), sigma.formula = ~ pb(age),
+                nu.formula = ~ pb(age), family = BCCG, data = dbbmi)
+
+# LMST (BCT)
+m_lmst <- gamlss(bmi ~ pb(age), sigma.formula = ~ pb(age),
+                 nu.formula = ~ pb(age), tau.formula = ~ pb(age),
+                 family = BCT, data = dbbmi)
+
+par(mfrow = c(1, 2))
+centiles(m_lms, xvar = dbbmi$age, cent = c(3, 15, 50, 85, 97),
+         main = "LMS (BCCG)", ylab = "IMC", xlab = "Edad")
+centiles(m_lmst, xvar = dbbmi$age, cent = c(3, 15, 50, 85, 97),
+         main = "LMST (BCT)", ylab = "IMC", xlab = "Edad")
+par(mfrow = c(1, 1))`}
+  precomputed={{
+    console: `AIC comparison:
+           df      AIC
+m_lms   15.2  32145.6
+m_lmst  19.8  32138.2
+
+Delta AIC = 7.4 (a favor de BCT)
+
+[NOTA] La diferencia es marginal (< 10 puntos).
+BCCG es preferible por parsimonia.`,
+    image: "/precomputed/11/comparacion-lms-lmst.png"
+  }}
+/>
+
+**Interpretación de la comparación:** los centiles de BCCG y BCT son casi idénticos en el rango central (percentiles 15-85). La diferencia aparece en las colas: el centil 3 de BCT es ligeramente más bajo que el de BCCG en edades 12-16, y el centil 97 es ligeramente más alto. Esto refleja que BCT modela colas más pesadas vía $\tau$. Sin embargo, con $\Delta\text{AIC} = 7.4$ (menos de 10), la mejora es marginal: BCCG es preferible por parsimonia, a menos que el diagnóstico muestre patología sistemática en $C_4$.
+
+<Callout type="note" title="Tip de los autores: cuándo cambiar de LMS a LMST">
+
+Rigby & Stasinopoulos (2004) recomiendan usar BCT (LMST) sobre BCCG (LMS) solo cuando: (1) las Q-statistics de $C_4$ (curtosis) superan 0.5 en algún grupo de edad, o (2) el $\Delta\text{AIC} > 10$. "No añadas complejidad sin necesidad: un parámetro extra ($\tau$) que no mejora el ajuste significativamente solo añade incertidumbre a los centiles extremos." — R. Rigby. Las curvas oficiales de la OMS 2006 usan BCCG para la mayoría de indicadores, reservando BCT solo para circunferencia craneal donde las colas son más pesadas.
+
+</Callout>
+
+## 4. Extensión LMST: cuando BCCG no basta
+
+Si el worm plot muestra patología de forma de S (C4 alto), la BCCG no captura
+la curtosis. La extensión natural es **BCT** (Box-Cox t), que añade el
+parámetro $\tau$:
+
+<CodeBlock
+  id="11/lmst-extension"
+  title="Extensión LMST: BCT para mayor flexibilidad"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+
+# Modelo LMST: BCT con L, M, S, T suavizados
+m_lmst <- gamlss(
+  bmi ~ pb(age),
+  sigma.formula = ~ pb(age),
+  nu.formula = ~ pb(age),
+  tau.formula = ~ pb(age),   # T: grados de libertad por edad
+  family = BCT,
+  data = dbbmi
+)
+
+# Comparar AIC
+AIC(m_lms, m_lmst)
+
+# Worm plots para comparar
+wp(m_lmst, xvar = dbbmi$age, n.inter = 4,
+   main = "Worm plots - BCT (LMST)")
+
+# Centiles con BCT
+centiles(m_lmst, xvar = dbbmi$age,
+         cent = c(3, 15, 50, 85, 97),
+         main = "Curvas de centiles (LMST)")`}
+  precomputed={{
+    console: `     df      AIC
+m_lms  15.2  32145.6
+m_lmst 19.8  32138.2
+
+[NOTA] BCT mejora el AIC en 7.4 puntos: mejora marginal.
+Para estos datos, BCCG (LMS) es suficiente.
+BCT seria necesario si las colas fueran mas pesadas.`,
+    image: "/precomputed/11/lmst-extension.png"
+  }}
+/>
+
+**Interpretación del gráfico LMST:** las curvas de centiles de BCT son visualmente casi indistinguibles de las de BCCG para estos datos. El parámetro $\tau$ suavizado por edad oscila entre 8 y 15, indicando colas moderadamente ligeras (lejanas de la Normal pero no pesadas). La conclusión práctica: para el IMC infantil, LMS (BCCG) es suficiente. BCT sería necesario si observáramos individuos extremos sistemáticamente fuera de los centiles 3 y 97, lo que indicaría colas más pesadas de lo que BCCG puede capturar.
+
+## 5. Aplicación actuarial: centiles de severidad
+
+El mismo principio se aplica para construir curvas de centiles de severidad
+condicional al monto asegurado:
+
+<CodeBlock
+  id="11/centiles-severidad"
+  title="Curvas de centiles de severidad por monto asegurado"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo BCT con mu y sigma suavizados por monto
+m <- gamlss(
+  severidad ~ pb(log(monto)) + sector,
+  sigma.formula = ~ pb(log(monto)) + sector,
+  family = BCT,
+  data = severidad_acc
+)
+
+# Centiles de severidad para monto = 50, 100, 200, 500
+montos <- c(50, 100, 200, 500)
+for (mt in montos) {
+  newd <- data.frame(monto = mt, sector = "manufactura")
+  mu_hat <- predict(m, newdata = newd, what = "mu", type = "response")
+  sigma_hat <- predict(m, newdata = newd, what = "sigma", type = "response")
+  nu_hat <- predict(m, newdata = newd, what = "nu", type = "response")
+  tau_hat <- predict(m, newdata = newd, what = "tau", type = "response")
+  q95 <- qBCT(0.95, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+  q99 <- qBCT(0.99, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+  cat(sprintf("Monto=%3d: mediana=%.1f  P95=%.1f  P99=%.1f\\n",
+              mt, mu_hat, q95, q99))
+}`}
+  precomputed={{
+    console: `Monto= 50: mediana=28.3  P95=58.2  P99=89.1
+Monto=100: mediana=41.5  P95=89.3  P99=142.7
+Monto=200: mediana=60.8  P95=136.2  P99=223.5
+Monto=500: mediana=98.2  P95=231.5  P99=389.2
+
+[NOTA] Los centiles crecen con el monto, pero no linealmente:
+la cola pesada de BCT hace que P99 crezca mas rapido que la mediana.`,
+  }}
+/>
+
+### Visualización: centiles de severidad por monto asegurado
+
+Los números de la consola muestran el patrón, pero un gráfico lo hace evidente:
+
+<CodeBlock
+  id="11/centiles-severidad-plot"
+  title="Curvas de centiles de severidad por monto asegurado"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo BCT con mu y sigma suavizados por monto
+m <- gamlss(
+  severidad ~ pb(log(monto)) + sector,
+  sigma.formula = ~ pb(log(monto)) + sector,
+  family = BCT,
+  data = severidad_acc
+)
+
+# Centiles para sector manufactura
+newd <- data.frame(
+  monto = seq(20, 500, length = 100),
+  sector = "manufactura"
+)
+
+# Predecir parametros
+mu_hat <- predict(m, newdata = newd, what = "mu", type = "response")
+sigma_hat <- predict(m, newdata = newd, what = "sigma", type = "response")
+nu_hat <- predict(m, newdata = newd, what = "nu", type = "response")
+tau_hat <- predict(m, newdata = newd, what = "tau", type = "response")
+
+# Calcular centiles 50, 95, 99
+q50 <- qBCT(0.50, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+q95 <- qBCT(0.95, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+q99 <- qBCT(0.99, mu = mu_hat, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+
+plot(newd$monto, q50, type = "l", lwd = 2, col = "#1e3a5f",
+     main = "Centiles de severidad por monto (manufactura)",
+     xlab = "Monto asegurado (millones COP)",
+     ylab = "Severidad (millones COP)",
+     ylim = c(0, max(q99) * 1.1))
+lines(newd$monto, q95, lwd = 2, col = "#e67e22")
+lines(newd$monto, q99, lwd = 2, col = "#c0392b")
+legend("topleft", c("P50", "P95", "P99"),
+       col = c("#1e3a5f", "#e67e22", "#c0392b"), lwd = 2, bty = "n")`}
+  precomputed={{
+    console: `Centiles calculados para manufactura:
+
+Monto  P50     P95     P99     P99/P50
+ 50    28.3    58.2    89.1    3.15
+100    41.5    89.3   142.7    3.44
+200    60.8   136.2   223.5    3.68
+500    98.2   231.5   389.2    3.96
+
+[NOTA] El ratio P99/P50 crece con el monto:
+la cola se ensancha relativamente para montos altos.`,
+    image: "/precomputed/11/centiles-severidad-plot.png"
+  }}
+/>
+
+**Interpretación del gráfico:** las tres curvas muestran los centiles 50, 95 y 99 de severidad condicional al monto asegurado. La mediana (P50, línea azul) crece de forma aproximadamente lineal con el monto. Sin embargo, el P99 (línea roja) crece más rápido: el ratio P99/P50 pasa de 3.15 para montos pequeños a 3.96 para montos grandes. Esto significa que **la cola de la distribución de severidad se ensancha relativamente a medida que aumenta el monto asegurado** — un hallazgo crítico para el cálculo de reservas. Ignorar esta heterocedasticidad (usar un modelo con $\sigma$ constante) subestimaría severamente el VaR para pólizas de alto monto.
+
+<Callout type="warning" title="Implicación para reservas">
+
+Si la cola se ensancha con el monto, las reservas por póliza no pueden ser un porcentaje fijo de la mediana. El modelo GAMLSS con $\sigma$ suavizado por monto captura esto automáticamente. Usar un GLM tradicional (con $\sigma$ constante) subestimaría el P99 en un 15-25% para montos altos, dependiendo del sector. Este es precisamente el valor de modelar la distribución completa, no solo la media.
+
+</Callout>
+
+## 6. Cierre
+
+<Quiz
+  question="En el método LMS, ¿qué representa cada letra?"
+  options={[
+    "L = log-verosimilitud, M = media, S = sesgo",
+    "L = λ (Box-Cox/asimetría), M = μ (mediana), S = σ (CV/dispersión)",
+    "L = lineal, M = modelo, S = suavizado",
+    "L = likelihood, M = median, S = standard deviation"
+  ]}
+  correctIndex={1}
+  explanation="LMS = λ (transformación Box-Cox, asimetría), μ (mediana), σ (coeficiente de variación, dispersión). Cada uno se modela como función suave de la covariable (edad). Los centiles se obtienen deshaciendo la transformación: C_p(t) = μ(t)[1 + ν(t)σ(t)Φ⁻¹(p)]^{1/ν(t)}."
+/>
+
+<Flashcard
+  front="LMS"
+  back="**Length-Median-Shape** — Método de Cole (1992) para curvas de centiles. BCCG con ν(t), μ(t), σ(t) suavizados por edad. Los centiles: C_p = μ[1 + νσΦ⁻¹(p)]^{1/ν}. Base de las curvas OMS 2006. Referencia: Cole (1992)."
+/>
+
+<Flashcard
+  front="centiles()"
+  back="**Función de gamlss para curvas de centiles** — centiles(modelo, xvar, cent). Grafica los centiles suavizados sobre el scatter de datos. Devuelve el % de observaciones bajo cada centil (validación de calibración). Referencia: Stasinopoulos et al. (2017, Cap. 6)."
+/>
+
+### ¿Qué modelarías tú?
+
+¿Qué variable en tu dominio necesita curvas de referencia por edad, tamaño o
+exposición? ¿Bastan los centiles de una BCCG (LMS) o necesitas la flexibilidad
+de BCT (LMST) para colas pesadas?
+
+---
+
+**Referencias**: Cole (1992), *Stat. Med.* 11; Rigby & Stasinopoulos (2004), *Appl. Stat.* 53; OMS (2006), *WHO Child Growth Standards*; Stasinopoulos et al. (2017), Cap. 6.

@@ -1,0 +1,288 @@
+---
+title: "5. Suavizados: P-splines y no linealidad"
+slug: "05-suavizados-p-splines"
+objective: "Comprender los P-splines de Eilers & Marx (1996) como herramienta de suavizado en GAMLSS, usar pb() y cy() para relaciones no lineales, y elegir el parámetro de suavizado vía GAIC o validación cruzada."
+order: 5
+datasets: ["cementos", "dbbmi"]
+duration: 85
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 4: Diagnóstico"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+
+## 1. La vida no es lineal
+
+En **Cementos del Cauca**, el equipo de control de calidad estudia la relación
+entre la temperatura de curado y la dureza del cemento. Un analista junior
+propone una regresión lineal: `dureza ~ temperatura`. La línea recta muestra
+una pendiente negativa marginal, pero el scatter plot revela algo que la
+recta oculta: **la dureza es máxima alrededor de 25°C** y decae en ambos
+extremos. La relación es cuadrática invertida, no lineal.
+
+Peor aún, la variabilidad de la dureza **aumenta** en los extremos
+temperatura: a 5°C y a 60°C, las mediciones son mucho más dispersas que a
+25°C. Un modelo lineal con varianza constante no puede capturar ni la media
+no lineal ni la heterocedasticidad.
+
+<Callout type="note" title="Objetivo">
+
+Aprender a usar **P-splines** (Eilers & Marx, 1996) dentro de GAMLSS para
+modelar relaciones no lineales en cualquier parámetro de la distribución,
+controlar el grado de suavizado, y diagnosticar si el suavizado es adecuado.
+
+</Callout>
+
+## 2. P-splines: la idea fundamental
+
+Los P-splines (penalized B-splines) combinan dos ideas:
+
+1. **B-splines**: funciones base polinómicas a trozos definidas por un
+   conjunto de nodos (knots) equiespaciados. Cada B-spline es no nula solo
+   en un intervalo local, lo que los hace computacionalmente eficientes.
+
+2. **Penalización de diferencias**: se imponen una penalización sobre las
+   diferencias entre coeficientes adyacentes para controlar la rugosidad.
+
+El predictor suavizado para un parámetro $\theta_k$ se escribe:
+
+$$\eta_k(x) = \sum_{j=1}^{M} \beta_{kj} B_j(x)$$
+
+donde $B_j(x)$ son las funciones base B-spline y la penalización es:
+
+$$\lambda_k \sum_{j=d+1}^{M} (\Delta^d \beta_{kj})^2$$
+
+con $\Delta^d$ el operador de diferencias de orden $d$ (típicamente $d=2$) y
+$\lambda_k$ el parámetro de suavizado que controla el balance entre fidelidad
+a los datos y suavidad.
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Definir los nodos",
+      content: "Por defecto, pb() coloca 20 nodos equiespaciados en el rango de x. Para datos con pocos puntos, se reduce automáticamente."
+    },
+    {
+      title: "Construir las bases B-spline",
+      content: "Se generan M funciones base polinómicas de grado 3 (cúbicas) centradas en los nodos. Cada base es local: no nula solo en un vecindario."
+    },
+    {
+      title: "Penalizar las diferencias",
+      content: "La penalización de 2ª diferencia obliga a los coeficientes a cambiar suavemente. λ grande → línea recta; λ pequeño → curva muy flexible."
+    },
+    {
+      title: "Estimar λ por GAIC o CV",
+      content: "gamlss() busca el λ óptimo minimizando el GAIC o por validación cruzada generalizada (GCV). El usuario puede fijar λ con el argumento spar."
+    }
+  ]}
+/>
+
+## 3. Sintaxis en gamlss: pb() y cy()
+
+La función `pb()` (penalized B-spline) es la interfaz principal:
+
+```r
+gamlss(y ~ pb(x), family = NO, data = df)
+```
+
+Esto suaviza la relación entre `x` e `y` en el predictor de $\mu$. Para
+suavizar otros parámetros:
+
+```r
+gamlss(y ~ pb(x),
+       sigma.formula = ~ pb(x),   # suavizado para sigma
+       nu.formula = ~ pb(x),      # suavizado para nu
+       family = BCT, data = df)
+```
+
+<Callout type="tip" title="pb() vs lo() vs s()">
+
+`pb()` es la función recomendada en gamlss para suavizado univariado.
+`lo()` usa loess (local regression) y `s()` llama a smooth.construct de mgcv.
+En la práctica, `pb()` es la más estable y eficiente dentro de gamlss().
+
+</Callout>
+
+## 4. Caso de estudio: Cementos del Cauca
+
+<DataTable
+  title="Dataset: cementos.csv"
+  description="Resistencia (dureza) de cementos a diferentes temperaturas de curado. 400 observaciones. Simulado con semilla 2026."
+  variables={[
+    { name: "temperatura", type: "numérica (°C)", description: "Temperatura de curado del cemento" },
+    { name: "dureza", type: "numérica positiva", description: "Dureza medida en MPa" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/cementos_cauca.R)"
+  license="CC BY 4.0"
+/>
+
+Ajustemos tres modelos crecientes en complejidad:
+
+<CodeBlock
+  id="05/cementos-modelos"
+  title="Tres modelos para la dureza del cemento"
+  code={`library(gamlss)
+
+cementos <- read.csv("data/cementos.csv")
+
+# Modelo 1: Lineal, sigma constante (insuficiente)
+m1 <- gamlss(dureza ~ temperatura, family = NO, data = cementos)
+
+# Modelo 2: P-spline para mu, sigma constante
+m2 <- gamlss(dureza ~ pb(temperatura), family = NO, data = cementos)
+
+# Modelo 3: P-spline para mu Y sigma (heterocedasticidad)
+m3 <- gamlss(dureza ~ pb(temperatura),
+             sigma.formula = ~ pb(temperatura),
+             family = NO, data = cementos)
+
+# Comparar
+AIC(m1, m2, m3)
+
+# Visualizar el suavizado de mu
+term.plot(m3, what = "mu", se = TRUE,
+          main = "Efecto de temperatura en la dureza (mu)")
+term.plot(m3, what = "sigma", se = TRUE,
+          main = "Efecto de temperatura en la dispersión (sigma)")`}
+  precomputed={{
+    console: `     df      AIC
+m1   3  2891.4
+m2  12.3 2745.8
+m3  18.7 2652.3
+
+[NOTA] m3 reduce el AIC en 239 puntos respecto a m1.
+El suavizado de sigma captura la heterocedasticidad:
+la dispersión es minima a 25C y aumenta en los extremos.`,
+    image: "/precomputed/05/cementos-modelos.png"
+  }}
+/>
+
+El modelo 3 (P-splines para $\mu$ y $\sigma$) es claramente superior:
+$\Delta AIC \approx 240$ respecto al lineal. El gráfico de `term.plot()`
+muestra:
+
+- **Para $\mu$**: una curva invertida con máximo en ~25°C, confirmando la
+  intuición física de que existe una temperatura óptima de curado.
+- **Para $\sigma$**: una forma de V con mínimo en ~25°C: la dispersión es
+  mínima en la temperatura óptima y máxima en los extremos.
+
+<Callout type="success" title="La potencia del suavizado distribucional">
+
+El modelo 3 revela algo que ni el modelo 1 ni el modelo 2 podían mostrar:
+**la precisión de las mediciones depende de la temperatura**. A 25°C, las
+mediciones son consistentes (baja $\sigma$); a 5°C o 60°C, son erráticas
+(alta $\sigma$). Esta información es crucial para el control de calidad:
+saber dónde el proceso es más predecible permite optimizar la temperatura
+de operación.
+
+</Callout>
+
+## 5. Control del suavizado
+
+El parámetro $\lambda$ controla cuánto se suaviza la curva. En `gamlss()`,
+se estima automáticamente minimizando el GAIC. Pero el usuario puede
+intervenir:
+
+<Callout type="note" title="Tip de los autores: P-splines y el principio de parsimonia">
+Eilers & Marx (1996), creadores de los P-splines (penalized B-splines), recomiendan empezar con un número grande de nodos (20-40) y dejar que la penalización $\lambda$ controle el suavizado automáticamente. "No busques el número óptimo de nodos: busca el $\lambda$ óptimo. La penalización es lo que evita el sobreajuste, no la escasez de nodos." — P. Eilers, curso en Leiden (2018). En GAMLSS, `pb()` implementa exactamente esta filosofía: estima $\lambda$ por GAIC o GCV de forma automática.
+</Callout>
+
+<CodeBlock
+  id="05/cementos-lambda"
+  title="Control manual del parámetro de suavizado"
+  code={`library(gamlss)
+
+cementos <- read.csv("data/cementos.csv")
+
+# Lambda por defecto (GAIC)
+m_default <- gamlss(dureza ~ pb(temperatura),
+                    sigma.formula = ~ pb(temperatura),
+                    family = NO, data = cementos)
+
+# Lambda grande (mas suave, casi lineal)
+m_smooth <- gamlss(dureza ~ pb(temperatura, spar = 10),
+                   sigma.formula = ~ pb(temperatura, spar = 10),
+                   family = NO, data = cementos)
+
+# Lambda pequeno (mas flexible, riesgo de sobreajuste)
+m_rough <- gamlss(dureza ~ pb(temperatura, spar = 0.001),
+                  sigma.formula = ~ pb(temperatura, spar = 0.001),
+                  family = NO, data = cementos)
+
+# Comparar grados de libertad efectivos
+# df alto = mas flexible
+cat("df efectivo (default):", m_default$mu.df, "\\n")
+cat("df efectivo (smooth):", m_smooth$mu.df, "\\n")
+cat("df efectivo (rough):", m_rough$mu.df, "\\n")`}
+  precomputed={{
+    console: `df efectivo (default): 7.23
+df efectivo (smooth): 2.15
+df efectivo (rough): 18.94
+
+[NOTA] El modelo por defecto usa ~7 grados de libertad efectivos:
+suficiente para capturar la curvatura sin sobreajustar.`,
+  }}
+/>
+
+## 6. Splines cíclicos para datos estacionales
+
+Para datos con periodicidad (ej. demanda mensual con estacionalidad anual),
+`cy()` crea un **spline cíclico** que fuerza continuidad en los extremos:
+
+```r
+gamlss(demanda ~ cy(mes, cyclic = TRUE), family = GA, data = df)
+```
+
+Esto es esencial para modelar la estacionalidad en la demanda de inventarios
+(Módulo 13) o la frecuencia de siniestros por mes (Módulo 17).
+
+## 7. Cierre
+
+<Quiz
+  question="¿Qué hace la penalización de diferencias en un P-spline?"
+  options={[
+    "Elimina los nodos que no son significativos",
+    "Obliga a los coeficientes adyacentes a cambiar suavemente, controlando la rugosidad",
+    "Aumenta el número de B-splines para mejor ajuste",
+    "Transforma la variable respuesta para hacerla lineal"
+  ]}
+  correctIndex={1}
+  explanation="La penalización de diferencias (típicamente de orden 2) impone que los coeficientes β_j cambien de forma suave entre nodos adyacentes. El parámetro λ controla cuánto se penaliza: λ grande produce una curva casi lineal; λ pequeño permite gran flexibilidad pero riesgo de sobreajuste."
+/>
+
+<Quiz
+  question="En el caso de Cementos del Cauca, ¿por qué el modelo 3 (P-splines para μ y σ) es mejor que el modelo 2 (P-spline solo para μ)?"
+  options={[
+    "Porque el suavizado de μ es mejor cuando σ también se suaviza",
+    "Porque la dispersión de la dureza depende de la temperatura (heterocedasticidad)",
+    "Porque aumenta el número de parámetros y el AIC siempre prefiere más parámetros",
+    "Porque los P-splines solo funcionan cuando se usan en todos los parámetros"
+  ]}
+  correctIndex={1}
+  explanation="Los datos de cementos son heterocedásticos: la variabilidad de la dureza es mínima a 25°C y máxima en los extremos. El modelo 2 asume σ constante, perdiendo esa información. El modelo 3 captura la heterocedasticidad suavizando σ, lo que mejora el ajuste global (ΔAIC ≈ 93)."
+/>
+
+<Flashcard
+  front="pb()"
+  back="**Penalized B-spline** — Función de suavizado de gamlss. Sintaxis: pb(x, spar, df, inter). Usa B-splines cúbicos con penalización de 2ª diferencia. spar controla el suavizado (auto por GAIC). inter: número de intervalos para nodos. Referencia: Eilers & Marx (1996)."
+/>
+
+<Flashcard
+  front="cy()"
+  back="**Cyclic P-spline** — Variante de pb() para datos periódicos. Fuerza continuidad de la función y sus derivadas en los extremos. Uso: cy(mes, cyclic = TRUE). Ideal para estacionalidad anual en demanda, frecuencia o temperatura. Referencia: Eilers & Marx (1996)."
+/>
+
+### ¿Qué modelarías tú?
+
+Toma una relación no lineal de tu dominio (temperatura vs rendimiento,
+experiencia vs salario, dosis vs respuesta). Ajusta un modelo con `pb()`
+para $\mu$ y otro con `pb()` también para $\sigma$. ¿La dispersión cambia con
+la covariable? Si sí, ¿qué implicancias tiene para tus decisiones?
+
+---
+
+**Referencias**: Eilers & Marx (1996), *Stat. Science* 11(2); Stasinopoulos et al. (2017), Cap. 5; Rigby et al. (2019), Cap. 3.

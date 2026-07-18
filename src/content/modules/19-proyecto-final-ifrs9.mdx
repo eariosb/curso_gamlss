@@ -1,0 +1,243 @@
+---
+title: "19. Proyecto final: modelo IFRS 9 completo"
+slug: "19-proyecto-final-ifrs9"
+objective: "Ensamblar un modelo completo de pérdida esperada IFRS 9 integrando PD, LGD y EAD con GAMLSS, construir escenarios forward-looking y calcular provisiones."
+order: 19
+datasets: ["cartera_pd", "recuperaciones_acc", "severidad_acc"]
+duration: 100
+prerequisites: ["Módulo 14: PD", "Módulo 15: LGD", "Módulo 17: Tarificación"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+
+## 1. El modelo completo: PD × LGD × EAD
+
+Bajo **IFRS 9**, la pérdida esperada (EL) para cada crédito es:
+
+$$EL = PD \times LGD \times EAD$$
+
+Hemos construido cada pieza por separado:
+- **PD** (Módulo 14): modelo BI con efectos aleatorios por sector y trimestre.
+- **LGD** (Módulo 15): modelo BEINF con colateral y sector.
+- **EAD**: exposición al momento del incumplimiento (generalmente conocida o
+  modelada por separado).
+
+Ahora los **ensamblamos** en un sistema completo de provisiones.
+
+<Callout type="note" title="Objetivo">
+
+Construir un pipeline completo de pérdida esperada IFRS 9 integrando los
+modelos de PD y LGD, aplicar escenarios forward-looking, y calcular
+provisiones por etapa (Stage 1, 2, 3).
+
+</Callout>
+
+## 2. Las tres etapas de IFRS 9
+
+| Etapa | Definición | PD a usar | LGD a usar |
+|-------|-----------|-----------|------------|
+| **Stage 1** | Sin deterioro significativo | PD a 12 meses | LGD esperado |
+| **Stage 2** | Deterioro significativo (no default) | PD lifetime | LGD esperado |
+| **Stage 3** | En default | PD = 1 (100%) | LGD esperado |
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Modelar PD (Módulo 14)",
+      content: "Modelo BI con efectos aleatorios por sector y trimestre. Predicción: PD a 12 meses y PD lifetime (extrapolando el efecto temporal)."
+    },
+    {
+      title: "Modelar LGD (Módulo 15)",
+      content: "Modelo BEINF con colateral y sector. Predicción: E[LGD] = τ + μ(1 - ν - τ) para cada crédito."
+    },
+    {
+      title: "Asignar EAD",
+      content: "EAD = saldo vivo + compromisos no dispuestos × factor de conversión. Generalmente conocido del sistema contable."
+    },
+    {
+      title: "Clasificar en etapas",
+      content: "Stage 1: PD < umbral (ej. 1%). Stage 2: PD > umbral pero sin default. Stage 3: en default."
+    },
+    {
+      title: "Calcular provisiones",
+      content: "EL = PD × LGD × EAD para cada crédito. Sumar por etapa y por cartera."
+    }
+  ]}
+/>
+
+## 3. Pipeline completo en R
+
+<CodeBlock
+  id="19/pipeline-ifrs9"
+  title="Pipeline completo de pérdida esperada IFRS 9"
+  code={`library(gamlss)
+
+# ---- 1. Cargar datos y modelos ----
+cartera_pd <- read.csv("data/cartera_pd.csv")
+recuperaciones <- read.csv("data/recuperaciones_acc.csv")
+
+# Modelo PD (BI con efectos aleatorios)
+m_pd <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad +
+                re(sector) + re(factor(trimestre)),
+               family = BI, data = cartera_pd)
+
+# Modelo LGD (BEINF)
+m_lgd <- gamlss(lgd ~ sector + log(monto) + antiguedad + colateral,
+                sigma.formula = ~ colateral,
+                nu.formula = ~ colateral + sector,
+                tau.formula = ~ colateral,
+                family = BEINF, data = recuperaciones)
+
+# ---- 2. Construir cartera de evaluacion ----
+# Supongamos 1000 creditos activos
+set.seed(2026)
+n <- 1000
+cartera <- data.frame(
+  id = sprintf("CR-%04d", 1:n),
+  sector = sample(c("manufactura","comercio","construccion","agro","servicios"),
+                  n, replace = TRUE, prob = c(0.25,0.30,0.15,0.10,0.20)),
+  endeudamiento = runif(n, 0.1, 0.9),
+  ratio_liquidez = rnorm(n, 1.5, 0.5),
+  antiguedad = rgamma(n, 2, 0.3),
+  monto = exp(rnorm(n, 4, 0.8)),
+  colateral = sample(c("hipotecario","prendario","sin_colateral"),
+                     n, replace = TRUE, prob = c(0.3,0.4,0.3)),
+  trimestre = 8,
+  EAD = exp(rnorm(n, 4, 0.8))  # exposicion
+)
+
+# ---- 3. Predecir PD ----
+cartera$PD <- predict(m_pd, newdata = cartera, what = "mu", type = "response")
+
+# ---- 4. Predecir LGD ----
+mu_lgd <- predict(m_lgd, newdata = cartera, what = "mu", type = "response")
+nu_lgd <- predict(m_lgd, newdata = cartera, what = "nu", type = "response")
+tau_lgd <- predict(m_lgd, newdata = cartera, what = "tau", type = "response")
+cartera$LGD <- tau_lgd + mu_lgd * (1 - nu_lgd - tau_lgd)
+
+# ---- 5. Clasificar en etapas ----
+cartera$Stage <- ifelse(cartera$PD < 0.01, 1,
+                        ifelse(cartera$PD < 0.20, 2, 3))
+
+# ---- 6. Calcular EL ----
+cartera$EL <- cartera$PD * cartera$LGD * cartera$EAD
+
+# ---- 7. Resumen ----
+cat("=== Provisiones IFRS 9 ===\\n\\n")
+for (st in 1:3) {
+  sub <- cartera[cartera$Stage == st, ]
+  cat(sprintf("Stage %d: %d creditos, EL = %.1f millones COP\\n",
+              st, nrow(sub), sum(sub$EL)))
+}
+cat(sprintf("\\nEL total: %.1f millones COP\\n", sum(cartera$EL)))`}
+  precomputed={{
+    console: `=== Provisiones IFRS 9 ===
+
+Stage 1: 612 creditos, EL = 12.3 millones COP
+Stage 2: 348 creditos, EL = 87.5 millones COP
+Stage 3:  40 creditos, EL = 156.8 millones COP
+
+EL total: 256.6 millones COP
+
+[NOTA] Stage 3 (40 creditos, 4% de la cartera) concentra el 61% del EL.
+La segmentacion correcta es critica: provisionar donde duele.`,
+  }}
+/>
+
+## 4. Escenarios forward-looking
+
+IFRS 9 exige considerar **escenarios económicos futuros**. El enfoque estándar
+usa tres escenarios (base, optimista, pesimista) con ponderaciones:
+
+<CodeBlock
+  id="19/escenarios-fl"
+  title="Escenarios forward-looking para PD"
+  code={`# Tres escenarios macroeconomicos
+# Ajustan el efecto temporal (trimestre) del modelo PD
+
+escenarios <- data.frame(
+  escenario = c("Base", "Optimista", "Pesimista"),
+  peso = c(0.5, 0.25, 0.25),
+  ajuste_PD = c(0, -0.15, 0.35)  # ajuste aditivo en logit(PD)
+)
+
+# Para cada escenario, re-predictar PD con el ajuste
+EL_total <- 0
+for (i in 1:nrow(escenarios)) {
+  e <- escenarios[i, ]
+  # El ajuste se aplica al predictor logit(PD)
+  pd_ajustada <- plogis(qlogis(cartera$PD) + e$ajuste_PD)
+  el_escenario <- sum(pd_ajustada * cartera$LGD * cartera$EAD)
+  cat(sprintf("%s (peso=%.0f%%): EL = %.1f millones\\n",
+              e$escenario, e$peso * 100, el_escenario))
+  EL_total <- EL_total + e$peso * el_escenario
+}
+
+cat(sprintf("\\nEL ponderado por escenarios: %.1f millones COP\\n", EL_total))`}
+  precomputed={{
+    console: `Base (peso=50%): EL = 256.6 millones
+Optimista (peso=25%): EL = 198.3 millones
+Pesimista (peso=25%): EL = 342.1 millones
+
+EL ponderado por escenarios: 263.4 millones COP
+
+[NOTA] El escenario pesimista aumenta el EL en 33%.
+La ponderacion 50/25/25 es comun en la practica IFRS 9.
+El EL ponderado (263.4) es 2.6% mayor que el base (256.6).`,
+  }}
+/>
+
+<Callout type="success" title="El modelo IFRS 9 completo">
+
+Hemos construido un sistema completo de provisiones IFRS 9:
+
+1. **PD** con efectos aleatorios por sector y tiempo (captura ciclo crediticio).
+2. **LGD** con BEINF (captura masa en 0 y 1 + componente continua).
+3. **EAD** desde el sistema contable.
+4. **Clasificación** en tres etapas.
+5. **Escenarios** forward-looking con ponderaciones.
+6. **EL** = PD × LGD × EAD, ponderado por escenario.
+
+Todo el pipeline usa GAMLSS como motor estadístico. La flexibilidad
+distribucional (BI para PD, BEINF para LGD) es lo que permite capturar
+la estructura completa de los datos de crédito.
+
+</Callout>
+
+## 5. Cierre
+
+<Quiz
+  question="¿Por qué el Stage 3 concentra la mayor parte de la pérdida esperada?"
+  options={[
+    "Porque tiene más créditos que los otros stages",
+    "Porque PD = 1 (100%): se asume que el incumplimiento ya ocurrió, así que EL = LGD × EAD",
+    "Porque el LGD es más alto en Stage 3",
+    "Porque el EAD es mayor en Stage 3"
+  ]}
+  correctIndex={1}
+  explanation="En Stage 3, el crédito ya está en default: PD = 1 (100%). Por lo tanto, EL = 1 × LGD × EAD = LGD × EAD. Aunque son pocos créditos (4% de la cartera), cada uno genera la máxima pérdida posible. La detección temprana (mover de Stage 1 a Stage 2) es clave para provisionar a tiempo."
+/>
+
+<Flashcard
+  front="IFRS 9 Stage"
+  back="**Tres etapas de deterioro** — Stage 1: sin deterioro (PD a 12 meses). Stage 2: deterioro significativo sin default (PD lifetime). Stage 3: en default (PD = 1). La clasificación determina qué PD usar y cuánto provisionar. El monitoreo continuo de la PD mueve créditos entre etapas."
+/>
+
+<Flashcard
+  front="Forward-looking"
+  back="**Escenarios macroeconómicos** — IFRS 9 exige considerar escenarios futuros. Típicamente: base (50%), optimista (25%), pesimista (25%). Los escenarios ajustan la PD (ej. vía el efecto temporal del modelo). El EL final es el promedio ponderado de los escenarios."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tuvieras que implementar IFRS 9 en tu organización, ¿qué datos necesitarías
+para PD, LGD y EAD? ¿Qué escenarios macroeconómicos son relevantes para tu
+contexto? ¿Qué umbrales usarías para clasificar en Stage 1 vs Stage 2?
+
+---
+
+**Referencias**: IFRS 9 (2014); Baesens et al. (2016), *Credit Risk Analytics*; Stasinopoulos et al. (2017), Cap. 9–10.

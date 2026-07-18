@@ -1,0 +1,193 @@
+---
+title: "1. ¿Por qué modelar más que la media?"
+slug: "01-por-que-modelar-mas-que-la-media"
+objective: "Comprender las limitaciones de los modelos centrados en la media y motivar el enfoque distribucional con casos de seguros e inventarios."
+order: 1
+datasets: ["carteras_ab", "severidad_acc", "rent (gamlss.data)"]
+duration: 75
+prerequisites: ["Regresión lineal", "GLM básico"]
+---
+
+## 1. Dos carteras, la misma media… ¿el mismo riesgo?
+
+En la aseguradora **Andina de Crédito y Caución (ACC)**, el comité técnico revisa dos carteras de seguro de crédito. El informe ejecutivo resume cada una con un solo número: la severidad media de sus siniestros. Cartera A: **51 millones COP**. Cartera B: **53 millones COP**. Prácticamente iguales. El comité concluye que ambas merecen la misma prima.
+
+Seis meses después, la cartera B ha producido tres siniestros por encima de 400 millones; la cartera A, ninguno por encima de 220. La prima "justa" calculada con la media dejó a la compañía subsidiando en silencio a los asegurados más riesgosos: la definición clásica de **antiselección**.
+
+<Callout type="note" title="Objetivo de esta sección">
+Descubrir, con datos, por qué dos carteras con idéntica severidad media pueden tener perfiles de riesgo completamente distintos, y por qué ningún modelo centrado en la media puede detectarlo.
+</Callout>
+
+## 2. Primer vistazo a los datos
+
+<DataTable
+  title="Dataset: carteras_ab.csv"
+  description="Severidad de 600 siniestros de crédito (300 por cartera) de la aseguradora ficticia ACC, en millones de COP. Simulados: la cartera A es Gamma con CV moderado; la B, una mezcla con 15% de siniestros de cola lognormal, calibrada para igualar la media de A."
+  variables={[
+    { name: "cartera", type: "factor (A/B)", description: "Cartera a la que pertenece el siniestro." },
+    { name: "severidad", type: "numérica positiva", description: "Severidad del siniestro en millones de COP." }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/cartera_acc.R)"
+  license="CC BY-NC-SA 4.0"
+/>
+
+Exploremos ambas carteras. Si solo miráramos medias, no habría historia que contar:
+
+<CodeBlock
+  id="01/explorar-carteras"
+  title="Exploración: mismas medias, historias distintas"
+  code={`library(gamlss)
+
+carteras <- read.csv("data/carteras_ab.csv")
+
+# El resumen que vio el comité: solo medias
+aggregate(severidad ~ cartera, data = carteras, FUN = mean)
+
+# El resumen que el comité NO vio: dispersión y cuantiles extremos
+aggregate(severidad ~ cartera, data = carteras, FUN = sd)
+aggregate(severidad ~ cartera, data = carteras,
+          FUN = function(x) quantile(x, c(0.5, 0.95, 0.99)))
+
+# Densidades superpuestas
+plot(density(carteras$severidad[carteras$cartera == "A"]),
+     main = "Severidad por cartera", xlab = "Millones COP",
+     lwd = 2, col = "#1e3a5f", xlim = c(0, 500))
+lines(density(carteras$severidad[carteras$cartera == "B"]),
+      lwd = 2, col = "#c62828")
+legend("topright", legend = c("Cartera A", "Cartera B"),
+       col = c("#1e3a5f", "#c62828"), lwd = 2, bty = "n")`}
+  precomputed={{
+    console: "  cartera severidad\n1       A  50.80\n2       B  52.80\n\n  cartera severidad\n1       A  25.94\n2       B  69.03\n\n  cartera severidad.50% severidad.95% severidad.99%\n1       A         46.9         98.6        128.4\n2       B         26.7        173.9        360.2\n\n[NOTA] Salida de referencia; regenerar con scripts/precompute.R",
+    image: "/precomputed/01/explorar-carteras.png",
+    imageAlt: "Densidades de severidad: la cartera A es unimodal y compacta; la B concentra masa en valores bajos pero exhibe una cola derecha larga que llega a 500 millones."
+  }}
+/>
+
+La media es casi idéntica (51 vs 53), pero la desviación estándar de B casi **triplica** la de A, y su percentil 99 (el que define el capital que exige el regulador) es **2.8 veces mayor**. La cartera B es otra bestia: la mayoría de sus siniestros son pequeños, pero una fracción pertenece a una cola pesada que la media promedia hasta la invisibilidad.
+
+<Callout type="warning" title="La lección actuarial">
+La prima técnica no se calcula sobre lo que pasa en promedio, sino sobre la distribución completa de pérdidas: cuantiles extremos, asimetría, curtosis. Dos carteras con igual media pueden requerir capitales de solvencia radicalmente distintos.
+</Callout>
+
+## 3. El mismo problema, en un almacén
+
+El fenómeno no es exclusivo de los seguros. En **Logística El Dorado**, dos SKUs tienen demanda semanal promedio de 100 unidades. El primero fluctúa suavemente entre 80 y 120; el segundo alterna semanas de 20 con picos de 300. El stock de seguridad que garantiza un nivel de servicio del 95% es el **cuantil 0.95 de la demanda**, no su media: para el primer SKU bastan ~130 unidades; el segundo exige más de 250. Dimensionar ambos con "media + 1.65 desviaciones" (la receta normal) falla precisamente donde más cuesta: en el SKU volátil, cuya distribución no se parece en nada a una campana.
+
+En biología ocurre igual: las curvas de crecimiento infantil de la OMS no grafican el peso *promedio* por edad, sino los **centiles** 3, 15, 50, 85 y 97 — construidos, como veremos en el Módulo 11, con la maquinaria GAMLSS.
+
+## 4. ¿Qué modela (y qué no) la regresión clásica?
+
+La regresión lineal y los GLM que ya conoces comparten una anatomía: modelan la **media condicional** $E[Y \mid x]$ y tratan todo lo demás como estorbo. Formalmente, el GLM asume
+
+$$
+Y \sim \mathcal{EF}(\mu, \phi), \qquad g(\mu) = x^\top \beta,
+$$
+
+donde $\mathcal{EF}$ es una familia exponencial y $\phi$ un parámetro de dispersión **constante**: un solo número para toda la población. Las consecuencias prácticas, siguiendo a Stasinopoulos et al. (2017, Cap. 1):
+
+| Supuesto implícito del GLM | Realidad en nuestros dominios |
+|---|---|
+| La dispersión es igual para todos | La volatilidad de la severidad depende del sector; la del proceso, de la temperatura |
+| La asimetría la fija la familia elegida | Las colas de pérdidas varían por segmento de riesgo |
+| Solo interesa $E[Y \mid x]$ | Primas, stocks, capital y centiles requieren cuantiles de $Y \mid x$ |
+
+El salto conceptual de este curso, formulado por Rigby & Stasinopoulos (2005), es permitir que **cada parámetro** de la distribución —no solo $\mu$— tenga su propio predictor:
+
+$$
+Y \sim \mathcal{D}(\mu, \sigma, \nu, \tau), \qquad g_k(\theta_k) = \eta_k = X_k \beta_k + \sum_j s_{jk}(x_{jk}),
+$$
+
+con $\theta_1 = \mu$ (localización), $\theta_2 = \sigma$ (escala), $\theta_3 = \nu$ y $\theta_4 = \tau$ (forma: asimetría y curtosis), y $\mathcal{D}$ elegida en un catálogo de más de 100 distribuciones. La revisión de Kneib et al. (2023) bautizó este programa de investigación con un lema que adoptamos como bandera: *rage against the mean*.
+
+<Callout type="curiosity" title="¿Y los modelos mixtos del curso hermano?">
+Si vienes del curso de Modelos Mixtos, ya diste un paso en esta dirección: el GLMM modela estructura en la media condicional por grupos. GAMLSS generaliza el movimiento: efectos fijos, suavizados y aleatorios pueden entrar en <em>cualquier</em> parámetro, incluida la dispersión — modelar la <em>heterogeneidad de la varianza</em> entre sectores será clave en los módulos actuariales (6, 14 y 15).
+</Callout>
+
+## 5. Primer contacto con gamlss: ¿qué distribución siguen las severidades?
+
+Pasemos del diagnóstico a la herramienta. El dataset `severidad_acc.csv` contiene 1.500 severidades de siniestros con sus covariables (las usaremos en el Módulo 2). Hoy solo preguntamos: **¿qué distribución marginal describe bien estas pérdidas?** La función `histDist()` del paquete `gamlss` ajusta una distribución por máxima verosimilitud y la superpone al histograma (Stasinopoulos et al. 2017, Cap. 2; adaptado del ejemplo introductorio de la vignette de `gamlss` con los datos `rent`).
+
+<CodeBlock
+  id="01/histdist-severidad"
+  title="histDist(): Normal vs Gamma vs Box-Cox t"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+y <- severidad_acc$severidad
+
+# 1. La Normal: el reflejo automático de la estadística clásica
+m_no  <- histDist(y, family = NO,  nbins = 40, main = "Normal (NO)")
+
+# 2. La Gamma: el estándar actuarial para severidades
+m_ga  <- histDist(y, family = GA,  nbins = 40, main = "Gamma (GA)")
+
+# 3. La Box-Cox t: asimetría Y curtosis como parámetros libres
+m_bct <- histDist(y, family = BCT, nbins = 40, main = "Box-Cox t (BCT)")
+
+# Comparación por AIC (menor = mejor)
+AIC(m_no, m_ga, m_bct)`}
+  precomputed={{
+    console: "GAMLSS-RS iteration 1: Global Deviance = 14872.41\nGAMLSS-RS iteration 2: Global Deviance = 14872.41\n...\n\n     df      AIC\nm_bct 4 13892.77\nm_ga  2 13948.02\nm_no  2 15236.48\n\n[NOTA] Salida de referencia; regenerar con scripts/precompute.R",
+    image: "/precomputed/01/histdist-severidad.png",
+    imageAlt: "Tres histogramas de severidad con densidades ajustadas: la Normal asigna probabilidad a severidades negativas y aplana la cola; la Gamma captura la asimetría general; la BCT ajusta además el grosor de la cola derecha."
+  }}
+/>
+
+Lectura de resultados:
+
+- La **Normal** fracasa doblemente: asigna probabilidad positiva a severidades *negativas* y subestima la cola derecha — exactamente los dos rasgos que definen una pérdida.
+- La **Gamma** (la elección tradicional en tarificación, De Jong & Heller 2008) captura la asimetría global y mejora el AIC en más de 1.200 puntos.
+- La **BCT** (Box-Cox $t$; la estudiaremos a fondo en el Módulo 10) añade dos parámetros de forma y todavía arranca ~55 puntos más de AIC: en estas severidades hay más curtosis de la que una Gamma puede expresar. En una cartera real, esa diferencia *es* la diferencia entre reservar bien y reservar mal el percentil 99.5.
+
+<Callout type="success" title="Buena práctica">
+Antes de modelar covariables, entiende la distribución marginal de tu respuesta. En el Módulo 3 sistematizaremos esta búsqueda con <code>fitDist()</code> y <code>chooseDist()</code>; en el Módulo 4 aprenderemos a juzgar el ajuste con residuos cuantílicos y worm plots, no solo con el AIC.
+</Callout>
+
+## 6. El mapa del curso
+
+Lo que acabas de ver es el patrón que se repetirá, con herramientas cada vez más finas, durante 20 módulos: un problema real donde la media no basta → la distribución completa como objeto de modelado → una familia y unos predictores elegidos con criterio → diagnóstico riguroso → decisión de negocio o de investigación. Los seis dominios del curso (seguros de crédito y caución, inventarios, calidad, materiales, biología y riesgo financiero) irán rotando como casos de apertura, y el hilo actuarial culminará en el Módulo 19 ensamblando un modelo completo de pérdida esperada IFRS 9: $EL = PD \times LGD \times EAD$.
+
+## 7. Cierre: ¿qué aprendimos?
+
+<Quiz
+  question="¿Cuál de las siguientes situaciones exige modelar más que la media condicional?"
+  options={[
+    "Estimar el peso promedio de una población para un informe descriptivo",
+    "Calcular el stock de seguridad de un SKU con demanda muy variable",
+    "Comparar las medias de dos tratamientos en un experimento balanceado",
+    "Calcular un promedio móvil para suavizar una serie de tiempo"
+  ]}
+  correctIndex={1}
+  explanation="El stock de seguridad es un cuantil extremo de la distribución de demanda (p.ej. el 0.95), no su promedio. Si la dispersión o la forma de la distribución dependen de covariables, solo un modelo distribucional como GAMLSS entrega ese cuantil correctamente. Las demás opciones son preguntas legítimas sobre la media."
+/>
+
+<Quiz
+  question="Las carteras A y B de ACC tienen severidad media casi idéntica. ¿Por qué NO deberían pagar la misma prima?"
+  options={[
+    "Porque la cartera B tiene más siniestros que la A",
+    "Porque el percentil 99 de B casi triplica el de A: su cola exige más capital",
+    "Porque la media de B está mal calculada por los valores extremos",
+    "Sí deberían: la prima técnica depende solo de la pérdida esperada"
+  ]}
+  correctIndex={1}
+  explanation="Ambas carteras tienen 300 siniestros y sus medias son estimaciones válidas. La diferencia está en la forma de la distribución: la cola pesada de B implica requerimientos de capital (VaR, Expected Shortfall) mucho mayores, y una prima que ignore ese riesgo genera subsidio cruzado y antiselección."
+/>
+
+<Flashcards cards={[
+  {
+    front: "GA",
+    back: "Gamma — Soporte: (0, ∞). Parámetros: μ (media) y σ (CV: Var = σ²μ²). Enlaces por defecto: log(μ), log(σ). El caballo de batalla para severidades y costos positivos con asimetría moderada."
+  },
+  {
+    front: "BCT",
+    back: "Box-Cox t — Soporte: (0, ∞). Parámetros: μ (≈mediana), σ (dispersión), ν (transformación/asimetría), τ (grados de libertad: curtosis). Para respuestas positivas con colas pesadas ajustables. Base del método LMS extendido."
+  }
+]} />
+
+### ¿Qué modelarías tú?
+
+Piensa en tu propio campo: ¿qué decisión importante se toma hoy con un promedio? ¿La duración media de un trámite, la pérdida media de una cartera, la resistencia media de un material, el tiempo medio de entrega? Identifica: (a) la variable respuesta y su soporte, (b) la decisión que realmente depende de un cuantil o de la dispersión, y (c) qué covariables podrían mover no solo la media sino la *forma* de la distribución. Guarda tu respuesta: la retomaremos como semilla de tu proyecto final.
+
+---
+
+**Referencias del módulo**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3); Stasinopoulos, Rigby, Heller, Voudouris & De Bastiani (2017), *Flexible Regression and Smoothing*, Cap. 1–2; Kneib, Silbersdorff & Säfken (2023), *Econometrics and Statistics* 26; De Jong & Heller (2008), *GLMs for Insurance Data*, CUP.

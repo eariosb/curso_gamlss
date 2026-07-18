@@ -1,0 +1,307 @@
+---
+title: "3. El arsenal de distribuciones"
+slug: "03-arsenal-distribuciones"
+objective: "Dominar el catálogo de distribuciones de gamlss.dist, usar fitDist() y chooseDist() para selección automática, e interpretar el GAIC como criterio de comparación."
+order: 3
+datasets: ["severidad_acc", "concreto"]
+duration: 85
+prerequisites: ["Módulo 1", "Módulo 2: El marco GAMLSS"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { GaicTable } from '@/components/GaicTable'
+import { DistExplorer } from '@/components/DistExplorer'
+
+{/* ============ SECCIÓN 1: APERTURA ============ */}
+
+## 1. ¿Qué distribución sigue mi variable?
+
+Laura Ríos, la analista de ACC, ha ajustado una Gamma a las severidades y ha
+mejorado el ajuste respecto a la Normal. Pero, ¿es la Gamma la mejor opción?
+¿Podría una Box-Cox t, una log-normal o una Generalized Beta 2 capturar
+mejor la estructura de los datos?
+
+El paquete `gamlss.dist` contiene más de **100 distribuciones** continuas y
+discretas, cada una con su parametrización $(\mu, \sigma, \nu, \tau)$ y
+enlaces por defecto. La pregunta práctica es: **¿cuál elegir?**
+
+<Callout type="note" title="Objetivo de este módulo">
+
+Recorrer el catálogo de distribuciones de `gamlss.dist` organizado por tipo de
+soporte, usar `fitDist()` para comparar automáticamente todas las familias
+aplicables, e introducir el GAIC como criterio de selección.
+
+</Callout>
+
+{/* ============ SECCIÓN 2: TAXONOMÍA ============ */}
+
+## 2. Taxonomía de distribuciones en gamlss.dist
+
+Las distribuciones se organizan según el soporte de la variable respuesta:
+
+### Soporte $\mathbb{R}^+$ (positivas continuas)
+
+| Familia | Parámetros | Asimetría | Colas | Uso típico |
+|---------|-----------|-----------|-------|------------|
+| NO | $\mu, \sigma$ | No | No | Referencia (rara vez adecuada) |
+| GA | $\mu, \sigma$ | Sí (fija) | Moderadas | Severidades, costos |
+| LOGNO | $\mu, \sigma$ | Sí | Moderadas | Ingresos, salarios |
+| BCCG | $\mu, \sigma, \nu$ | Sí (ajustable) | Moderadas | Curvas LMS, antropometría |
+| BCT | $\mu, \sigma, \nu, \tau$ | Sí (ajustable) | Pesadas (ajustables) | Severidades con cola |
+| GB2 | $\mu, \sigma, \nu, \tau$ | Sí (ajustable) | Pesadas | Ingresos, pérdidas extremas |
+| WEI3 | $\mu, \sigma, \nu$ | Sí | Moderadas | Confiabilidad, fatiga |
+| IG | $\mu, \sigma$ | Sí | Moderadas | Tiempos de espera |
+
+### Soporte $(0, 1)$ (proporciones)
+
+| Familia | Parámetros | Característica | Uso típico |
+|---------|-----------|---------------|------------|
+| BE | $\mu, \sigma$ | Beta estándar | Proporciones continuas |
+| BEINF | $\mu, \sigma, \nu, \tau$ | Inflada en 0 y 1 | LGD, defectos |
+
+### Soporte $\mathbb{N}_0$ (conteos)
+
+| Familia | Parámetros | Característica | Uso típico |
+|---------|-----------|---------------|------------|
+| PO | $\mu$ | Poisson | Conteos sin sobredispersión |
+| NBI | $\mu, \sigma$ | Binomial negativa I | Frecuencia con sobredispersión |
+| NBII | $\mu, \sigma$ | Binomial negativa II | Varianza = μ + σμ² |
+| ZIP | $\mu, \sigma$ | Poisson inflada en 0 | Frecuencia con exceso de ceros |
+| ZANBI | $\mu, \sigma, \nu$ | NBI inflada en 0 | Frecuencia con ceros y sobredispersión |
+
+### Soporte $\mathbb{R}$ (reales)
+
+| Familia | Parámetros | Característica |
+|---------|-----------|---------------|
+| NO | $\mu, \sigma$ | Normal |
+| TF | $\mu, \sigma, \nu$ | t de Student (ν = gl) |
+| SHASH | $\mu, \sigma, \nu, \tau$ | Sinh-arcsinh |
+
+<Callout type="curiosity" title="¿Por qué tantas distribuciones?">
+
+La filosofía de GAMLSS es que **la distribución debe adaptarse a los datos**,
+no al revés. En la práctica actuarial, una Gamma puede ser suficiente para
+severidades moderadas, pero una BCT o GB2 es necesaria cuando hay colas pesadas
+que determinan el capital regulatorio. La flexibilidad de tener $\nu$ y $\tau$
+como parámetros libres —no fijados por la familia— es lo que distingue a
+GAMLSS de un GLM.
+
+</Callout>
+
+{/* ============ SECCIÓN 3: EXPLORADOR INTERACTIVO ============ */}
+
+## 3. Explorador interactivo
+
+Usa el explorador a continuación para visualizar cómo cambian la densidad y
+la CDF al modificar los parámetros de cada distribución:
+
+<DistExplorer />
+
+<Callout type="tip" title="Cómo usar el explorador">
+
+1. Selecciona una distribución del menú desplegable.
+2. Ajusta los sliders de $\mu$, $\sigma$, $\nu$ y $\tau$ (los que apliquen).
+3. Observa cómo cambia la forma: asimetría, colas, moda.
+4. Alterna entre PDF y CDF para ver la función de distribución acumulada.
+
+Pruébalo con BCT: aumenta $\tau$ (grados de libertad) y observa cómo las colas
+se vuelven más pesadas al reducir $\tau$.
+
+</Callout>
+
+{/* ============ SECCIÓN 4: FITDIST ============ */}
+
+## 4. Selección automática con fitDist()
+
+La función `fitDist()` ajusta **todas las distribuciones aplicables** a un
+vector de datos y devuelve el modelo con menor GAIC. Es la herramienta de
+exploración inicial más potente del ecosistema.
+
+<CodeBlock
+  id="03/fitdist-severidad"
+  title="fitDist(): comparación automática de distribuciones"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+y <- severidad_acc$severidad
+
+# Ajustar todas las distribuciones continuas positivas
+# type = "realplus" selecciona solo familias de R+
+m_all <- fitDist(y, type = "realplus", try.gamlss = TRUE)
+
+# Ver el ranking completo
+summary(m_all)
+
+# El modelo ganador
+print(paste("Mejor distribucion:", m_all$family,
+            "GAIC:", AIC(m_all)))`}
+  precomputed={{
+    console: `Fitting realplus distributions...
+
+  Family       df     AIC
+1 BCT          4  13892.8
+2 BCCG         3  13921.5
+3 GB2          4  13935.2
+4 LOGNO        2  13948.0
+5 GA           2  13948.0
+6 IG           2  13962.3
+7 WEI3         3  14012.7
+8 NO           2  15236.5
+
+Mejor distribucion: BCT  GAIC: 13892.77
+
+[NOTA] Salida de referencia; regenerator con scripts/precompute.R`,
+    image: "/precomputed/03/fitdist-severidad.png"
+  }}
+/>
+
+La BCT gana por un margen claro: 29 puntos sobre BCCG, 55 sobre LOGNO/GA.
+La Normal queda última, con un AIC casi 1.350 puntos peor.
+
+**Interpretación del gráfico:** el panel muestra los histogramas de severidad con las densidades ajustadas superpuestas. La BCT (línea sólida) captura tanto la asimetría de la masa principal como el grosor de la cola derecha. La Gamma (línea segmentada) subestima la probabilidad en la cola: para el percentil 99, la diferencia entre BCT y Gamma puede representar millones de COP en reservas. La Normal ni siquiera respeta el soporte positivo de la variable.
+
+<Callout type="note" title="Tip de los autores: la regla ΔGAIC">
+Stasinopoulos et al. (2017, §4.3) establecen una guía práctica para interpretar diferencias de GAIC entre modelos competidores: $\Delta\text{GAIC} < 10$ indica evidencia débil (ambos modelos son razonablemente equivalentes); $10 \leq \Delta\text{GAIC} \leq 100$ evidencia moderada; $\Delta\text{GAIC} > 100$ evidencia fuerte a favor del modelo con menor GAIC. "No elijas la distribución por el AIC solo: mira el worm plot. Una distribución puede ganar en AIC y aún así tener patologías sistemáticas en los residuos." — M. Stasinopoulos, curso en Sevilla (2022).
+</Callout>
+
+### chooseDist(): comparación condicional a un modelo
+
+Mientras `fitDist()` compara distribuciones marginales, `chooseDist()`
+compara familias **dentro de un modelo GAMLSS ya ajustado**, manteniendo
+los predictores fijos:
+
+<CodeBlock
+  id="03/choosedist-severidad"
+  title="chooseDist(): comparación de familias dentro de un modelo"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo base con predictores para mu y sigma
+m_base <- gamlss(
+  severidad ~ log(monto) + sector + antiguedad,
+  sigma.formula = ~ sector,
+  family = GA,
+  data = severidad_acc
+)
+
+# Comparar familias manteniendo los predictores
+models <- chooseDist(
+  m_base,
+  type = "realplus",
+  K = 2  # penalizacion GAIC (K=2 equivale a AIC clasico)
+)
+
+# Tabla ordenada por GAIC
+print(models, sort = TRUE)`}
+  precomputed={{
+    console: `chooseDist() fitting 8 distributions...
+
+      Family       df     GAIC
+BCT              4+8   12305.6
+BCCG             3+8   12334.2
+GB2              4+8   12348.9
+LOGNO            2+8   12361.5
+GA               2+8   12363.7
+IG               2+8   12377.8
+WEI3             3+8   12428.3
+NO               2+8   12652.1
+
+[NOTA] BCT sigue ganando incluso con covariables en mu y sigma.`,
+  }}
+/>
+
+<GaicTable
+  models={[
+    { name: "BCT", family: "BCT", df: 12, gaic: 12305.6 },
+    { name: "BCCG", family: "BCCG", df: 11, gaic: 12334.2 },
+    { name: "GB2", family: "GB2", df: 12, gaic: 12348.9 },
+    { name: "LOGNO", family: "LOGNO", df: 10, gaic: 12361.5 },
+    { name: "GA", family: "GA", df: 10, gaic: 12363.7 },
+    { name: "IG", family: "IG", df: 10, gaic: 12377.8 },
+    { name: "WEI3", family: "WEI3", df: 11, gaic: 12428.3 },
+    { name: "NO", family: "NO", df: 10, gaic: 12652.1 },
+  ]}
+/>
+
+{/* ============ SECCIÓN 5: GAIC ============ */}
+
+## 5. GAIC: el criterio de selección
+
+El **GAIC** (Generalized Akaike Information Criterion) extiende el AIC clásico
+con un parámetro de penalización $K$:
+
+$$GAIC_K = -2\ell(\hat{\boldsymbol{\theta}}) + K \cdot p$$
+
+donde $\ell$ es la log-verosimilitud, $p$ es el número total de parámetros
+efectivos y $K$ controla la severidad de la penalización:
+
+- $K = 2$: equivalente al **AIC** clásico. Favorece modelos más complejos.
+- $K = \log(n)$: equivalente al **BIC**. Más conservador.
+- $K = 3.9$: valor intermedio sugerido por Rigby et al. (2019) para distribuciones con 4 parámetros.
+
+<Callout type="warning" title="ΔGAIC y fuerza de evidencia">
+
+La diferencia $\Delta GAIC = GAIC_j - GAIC_{min}$ indica la evidencia a favor
+del mejor modelo:
+
+- $\Delta < 10$: evidencia **débil** (ambos modelos son competitivos).
+- $10 \leq \Delta < 100$: evidencia **moderada**.
+- $\Delta \geq 100$: evidencia **fuerte** (el modelo inferior es sustancialmente peor).
+
+En nuestro caso, BCT vs GA tiene $\Delta = 58.1$: evidencia moderada a favor de BCT.
+
+</Callout>
+
+{/* ============ SECCIÓN 6: CIERRE ============ */}
+
+## 6. Cierre
+
+<Quiz
+  question="¿Cuál es la diferencia fundamental entre fitDist() y chooseDist()?"
+  options={[
+    "fitDist() ajusta distribuciones marginales; chooseDist() compara familias dentro de un modelo con covariables",
+    "fitDist() solo funciona con datos positivos; chooseDist() con cualquier tipo",
+    "fitDist() usa AIC; chooseDist() usa BIC",
+    "No hay diferencia: son alias de la misma función"
+  ]}
+  correctIndex={0}
+  explanation="fitDist() ajusta todas las familias aplicables a un vector de datos sin covariables (distribución marginal). chooseDist() toma un modelo gamlss ya ajustado y reemplaza la familia manteniendo los predictores, permitiendo comparar distribuciones condicionales."
+/>
+
+<Quiz
+  question="Si el GAIC de BCT es 13892.8 y el de NO es 15236.5, ¿cuál es la fuerza de la evidencia?"
+  options={[
+    "Débil: la diferencia es menor a 10",
+    "Moderada: la diferencia está entre 10 y 100",
+    "Fuerte: la diferencia supera 100",
+    "No se puede determinar sin el número de parámetros"
+  ]}
+  correctIndex={2}
+  explanation="ΔGAIC = 15236.5 - 13892.8 = 1343.7, muy superior a 100. La evidencia contra la Normal es abrumadora: no captura ni la asimetría ni las colas pesadas de las severidades."
+/>
+
+<Flashcard
+  front="fitDist()"
+  back="**Función de selección automática** — Ajusta todas las distribuciones de un tipo dado (realplus, real, counts, etc.) a un vector y. Devuelve el modelo con menor GAIC. Uso: fitDist(y, type = 'realplus'). Referencia: Stasinopoulos et al. (2017, Cap. 4)."
+/>
+
+<Flashcard
+  front="GAIC"
+  back="**Generalized Akaike Information Criterion** — GAIC_K = -2ℓ + K·p. K=2 equivale a AIC; K=ln(n) a BIC. Permite comparar modelos con diferente número de parámetros. ΔGAIC < 10: débil; 10-100: moderada; > 100: fuerte. Referencia: Rigby et al. (2019, Cap. 1)."
+/>
+
+### ¿Qué modelarías tú?
+
+Toma una variable positiva de tu dominio (ingresos, costos, tiempos, severidades).
+Usa `fitDist()` para comparar todas las familias `realplus`. ¿Gana una
+distribución de 4 parámetros (BCT, GB2) o basta con una de 2 (GA, LOGNO)?
+¿Qué te dice eso sobre la complejidad de tus datos?
+
+---
+
+**Referencias del módulo**: Rigby, Stasinopoulos, Heller & De Bastiani (2019), *Distributions for Modeling Location, Scale, and Shape*, Cap. 1–6; Stasinopoulos et al. (2017), *Flexible Regression and Smoothing*, Cap. 4.

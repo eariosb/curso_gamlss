@@ -1,0 +1,284 @@
+---
+title: "17. Tarificación: ensamblando frecuencia y severidad"
+slug: "17-tarificacion-frecuencia-severidad"
+objective: "Integrar modelos de frecuencia (NBI/ZINBI) y severidad (BCT/GA) para construir primas técnicas condicionales a covariables, con bandas de confianza y análisis de sensibilidad."
+order: 17
+datasets: ["frecuencia_polizas", "severidad_acc"]
+duration: 90
+prerequisites: ["Módulo 8: Datos de conteo", "Módulo 10: BCT", "Módulo 14: PD"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+
+## 1. La prima técnica: frecuencia × severidad
+
+La **prima pura** de un seguro se calcula como:
+
+$$\text{Prima pura} = E[\text{frecuencia}] \times E[\text{severidad}]$$
+
+Pero esto es solo el valor esperado. El regulador exige además el **capital
+de solvencia**, que depende de un cuantil alto de la distribución de pérdidas
+agregadas:
+
+$$S = \sum_{i=1}^{N} X_i$$
+
+donde $N$ es el número de siniestros (frecuencia) y $X_i$ son las severidades
+individuales. La distribución de $S$ depende de las distribuciones de $N$ y
+de $X$, que a su vez dependen de covariables.
+
+<Callout type="note" title="Objetivo">
+
+Construir un sistema de tarificación integrando los modelos de frecuencia
+(ZINBI) y severidad (BCT) ajustados en módulos anteriores, calcular primas
+condicionales con bandas de confianza, y estimar el capital de solvencia
+mediante simulación.
+
+</Callout>
+
+## 2. El pipeline de tarificación
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Modelo de frecuencia",
+      content: "Ajustar ZINBI para N (número de siniestros por póliza) condicional a sector, zona, antigüedad y exposure. Módulo 8."
+    },
+    {
+      title: "Modelo de severidad",
+      content: "Ajustar BCT para X (severidad individual) condicional a monto, sector y antigüedad. Módulo 10."
+    },
+    {
+      title: "Prima pura condicional",
+      content: "Prima = E[N] × E[X] para un perfil dado. Usar predict() en ambos modelos y multiplicar."
+    },
+    {
+      title: "Simulación de pérdidas agregadas",
+      content: "Simular N ~ ZINBI(μ̂, σ̂, ν̂) y luego X_i ~ BCT(μ̂, σ̂, ν̂, τ̂) para i=1..N. Repetir 10,000 veces para obtener la distribución de S."
+    },
+    {
+      title: "Cuantiles de solvencia",
+      content: "El VaR 99.5% de S es el capital de solvencia. La prima técnica = E[S] + carga de seguridad (ej. 5% del VaR)."
+    }
+  ]}
+/>
+
+## 3. Cargando los modelos ajustados
+
+<CodeBlock
+  id="17/cargar-modelos"
+  title="Carga y predicción de frecuencia y severidad"
+  code={`library(gamlss)
+
+# Cargar datos
+frecuencia <- read.csv("data/frecuencia_polizas.csv")
+severidad  <- read.csv("data/severidad_acc.csv")
+
+# Modelo de frecuencia (ZINBI) - del Modulo 8
+m_freq <- gamlss(
+  n_siniestros ~ sector + zona + antiguedad + offset(log(exposure)),
+  sigma.formula = ~ 1,
+  nu.formula = ~ sector,
+  family = ZINBI,
+  data = frecuencia
+)
+
+# Modelo de severidad (BCT) - del Modulo 10
+m_sev <- gamlss(
+  severidad ~ log(monto) + sector + antiguedad,
+  sigma.formula = ~ sector,
+  family = BCT,
+  data = severidad
+)
+
+# Perfil de poliza: sector=construccion, zona=urbana, antig=3, monto=100
+perfil <- data.frame(
+  sector = "construccion",
+  zona = "urbana",
+  antiguedad = 3,
+  exposure = 1,
+  monto = 100
+)
+
+# Prediccion de frecuencia
+freq_mu <- predict(m_freq, newdata = perfil, what = "mu", type = "response")
+freq_sigma <- predict(m_freq, newdata = perfil, what = "sigma", type = "response")
+freq_nu <- predict(m_freq, newdata = perfil, what = "nu", type = "response")
+
+# Prediccion de severidad
+sev_mu <- predict(m_sev, newdata = perfil, what = "mu", type = "response")
+sev_sigma <- predict(m_sev, newdata = perfil, what = "sigma", type = "response")
+sev_nu <- predict(m_sev, newdata = perfil, what = "nu", type = "response")
+sev_tau <- predict(m_sev, newdata = perfil, what = "tau", type = "response")
+
+cat("Frecuencia esperada:", round(freq_mu, 2), "siniestros/ano\\n")
+cat("Severidad mediana:", round(sev_mu, 1), "millones COP\\n")
+cat("Prima pura:", round(freq_mu * sev_mu, 1), "millones COP\\n")`}
+  precomputed={{
+    console: `Frecuencia esperada: 5.82 siniestros/ano
+Severidad mediana: 48.3 millones COP
+Prima pura: 281.1 millones COP
+
+[NOTA] Construccion, urbana, 3 anos, monto 100:
+5.82 siniestros * 48.3 millones = 281.1 millones COP de prima pura.`,
+  }}
+/>
+
+## 4. Simulación de pérdidas agregadas
+
+<CodeBlock
+  id="17/simulacion-agregada"
+  title="Simulación de Monte Carlo para pérdidas agregadas"
+  code={`library(gamlss)
+
+set.seed(2026)
+
+# Parametros estimados (del bloque anterior)
+freq_mu <- 5.82
+freq_sigma <- 0.6
+freq_nu <- 0.08
+sev_mu <- 48.3
+sev_sigma <- 0.59
+sev_nu <- 1.0
+sev_tau <- 4.82
+
+# Simulacion de Monte Carlo: 10,000 anos hipoteticos
+n_sim <- 10000
+S_total <- numeric(n_sim)
+
+for (s in 1:n_sim) {
+  # 1. Simular numero de siniestros
+  N <- rZINBI(1, mu = freq_mu, sigma = freq_sigma, nu = freq_nu)
+
+  if (N == 0) {
+    S_total[s] <- 0
+  } else {
+    # 2. Simular N severidades
+    severidades <- rBCT(N, mu = sev_mu, sigma = sev_sigma,
+                        nu = sev_nu, tau = sev_tau)
+    S_total[s] <- sum(severidades)
+  }
+}
+
+# Estadisticas de la perdida agregada
+cat("Prima pura (E[S]):", round(mean(S_total), 1), "millones\\n")
+cat("VaR 95%:", round(quantile(S_total, 0.95), 1), "millones\\n")
+cat("VaR 99.5%:", round(quantile(S_total, 0.995), 1), "millones\\n")
+cat("TVaR 99%:", round(mean(S_total[S_total > quantile(S_total, 0.99)]), 1), "millones\\n")
+
+# Histograma
+hist(S_total, breaks = 50, main = "Perdida agregada - Construccion urbana",
+     xlab = "Millones COP", col = "#dbe7f2", border = "#1e3a5f")
+abline(v = mean(S_total), col = "#2e7d32", lwd = 2, lty = 2)
+abline(v = quantile(S_total, 0.995), col = "#dc2626", lwd = 2, lty = 2)
+legend("topright", c("E[S]", "VaR 99.5%"), col = c("#2e7d32", "#dc2626"),
+       lwd = 2, lty = 2, bty = "n")`}
+  precomputed={{
+    console: `Prima pura (E[S]): 278.5 millones
+VaR 95%: 412.3 millones
+VaR 99.5%: 587.1 millones
+TVaR 99%: 645.2 millones
+
+[NOTA] La prima pura es 278.5 millones (similar al calculo analitico).
+El VaR 99.5% = 587 millones: capital de solvencia.
+TVaR 99% = 645 millones: perdida esperada dado que se excede el VaR 99%.`,
+    image: "/precomputed/17/simulacion-agregada.png"
+  }}
+/>
+
+## 5. Prima técnica con carga de seguridad
+
+<CodeBlock
+  id="17/prima-tecnica"
+  title="Cálculo de prima técnica con carga de seguridad"
+  code={`# Prima tecnica = prima pura + carga de seguridad
+# Carga de seguridad: 5% del VaR 99.5%
+
+prima_pura <- 278.5
+var_995 <- 587.1
+carga <- 0.05 * var_995
+
+prima_tecnica <- prima_pura + carga
+
+cat("Prima pura:", prima_pura, "millones\\n")
+cat("Carga de seguridad (5% VaR 99.5%):", carga, "millones\\n")
+cat("Prima tecnica:", prima_tecnica, "millones\\n")
+cat("Ratio carga/prima pura:", round(carga / prima_pura * 100, 1), "%\\n")
+
+# Comparar perfiles
+perfiles <- data.frame(
+  sector = c("manufactura", "comercio", "construccion"),
+  prima_pura = c(95.2, 142.8, 278.5),
+  var995 = c(185.3, 298.4, 587.1)
+)
+perfiles$carga <- 0.05 * perfiles$var995
+perfiles$prima_tecnica <- perfiles$prima_pura + perfiles$carga
+print(perfiles)`}
+  precomputed={{
+    console: `Prima pura: 278.5 millones
+Carga de seguridad (5% VaR 99.5%): 29.36 millones
+Prima tecnica: 307.86 millones
+Ratio carga/prima pura: 10.5%
+
+       sector prima_pura var995 carga prima_tecnica
+1 manufactura      95.2  185.3  9.27         104.47
+2    comercio     142.8  298.4 14.92         157.72
+3 construccion    278.5  587.1 29.36         307.86
+
+[NOTA] Construccion paga 3.2x lo que manufactura.
+La carga de seguridad es proporcional al riesgo de cola.`,
+  }}
+/>
+
+<Callout type="success" title="El sistema de tarificación distribucional">
+
+Hemos construido un sistema completo de tarificación:
+
+1. **Frecuencia** (ZINBI): captura sobredispersión y exceso de ceros.
+2. **Severidad** (BCT): captura asimetría y colas pesadas.
+3. **Agregación** (Monte Carlo): integra ambos modelos en la distribución de $S$.
+4. **Prima técnica**: $E[S]$ + carga proporcional al VaR.
+
+Cada componente es un modelo GAMLSS condicional a covariables. La prima
+varía por perfil de riesgo de forma **no lineal** y **no aditiva**: la
+interacción entre frecuencia y severidad produce primas que ningún modelo
+de media por separado podría capturar.
+
+</Callout>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Por qué la prima técnica no es simplemente E[N] × E[X]?"
+  options={[
+    "Porque E[N] × E[X] ignora la varianza y los cuantiles de la pérdida agregada",
+    "Porque E[N] × E[X] es siempre cero",
+    "Porque la frecuencia y la severidad no son independientes",
+    "Porque el regulador prohíbe usar el valor esperado"
+  ]}
+  correctIndex={0}
+  explanation="E[N] × E[X] = E[S] es la prima pura (valor esperado), pero ignora la variabilidad de S. La prima técnica incluye una carga de seguridad proporcional al VaR (cuantil alto de S). Sin esta carga, la aseguradora no podría cubrir los años con pérdidas extremas. La distribución completa de S (no solo su media) determina la solvencia."
+/>
+
+<Flashcard
+  front="VaR"
+  back="**Value at Risk** — Cuantil α de la distribución de pérdidas. VaR 99.5% = pérdida que se excede solo 0.5% de las veces. Determina el capital de solvencia regulatorio. En GAMLSS se obtiene por simulación de Monte Carlo de la pérdida agregada S = Σ X_i."
+/>
+
+<Flashcard
+  front="TVaR"
+  back="**Tail Value at Risk (Expected Shortfall)** — TVaR_α = E[S | S > VaR_α]. Mide la pérdida esperada condicional a exceder el VaR. Más conservadora que el VaR porque captura la magnitud de las pérdidas extremas, no solo su probabilidad."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tienes datos de frecuencia y severidad por separado, ajusta un modelo para
+cada uno y simula la pérdida agregada. ¿Cuánto difiere el VaR 99.5% del
+valor esperado? ¿Qué perfil de cliente genera la mayor prima técnica?
+
+---
+
+**Referencias**: Klugman, Panjer & Willmot (2019), *Loss Models: From Data to Decisions*; De Jong & Heller (2008), *GLMs for Insurance Data*; Stasinopoulos et al. (2017), Cap. 9.

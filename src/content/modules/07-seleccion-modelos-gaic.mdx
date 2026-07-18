@@ -1,0 +1,255 @@
+---
+title: "7. Selección de modelos y GAIC"
+slug: "07-seleccion-modelos-gaic"
+objective: "Dominar la selección de modelos en GAMLSS usando GAIC con diferentes penalizaciones, comparar modelos anidados y no anidados, y entender el balance sesgo-varianza en el suavizado."
+order: 7
+datasets: ["severidad_acc", "cementos"]
+duration: 75
+prerequisites: ["Módulo 3: El arsenal de distribuciones", "Módulo 5: Suavizados"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { GaicTable } from '@/components/GaicTable'
+
+## 1. El dilema del modelador
+
+Laura ha ajustado varios modelos a las severidades de ACC: Gamma con $\mu$
+lineal, Gamma con $\mu$ y $\sigma$ por sector, BCT con suavizados, BCT con
+efectos aleatorios... ¿Cuál es el "mejor"? ¿El de menor AIC? ¿El más parsimonioso?
+¿El que mejor pasa los diagnósticos?
+
+La selección de modelos en GAMLSS tiene tres dimensiones:
+
+1. **Familia de distribución**: ¿GA, BCT, GB2?
+2. **Estructura de predictores**: ¿lineal, suavizado, con efectos aleatorios?
+3. **Penalización**: ¿AIC ($K=2$), BIC ($K=\log n$), o un valor intermedio?
+
+<Callout type="note" title="Objetivo">
+
+Sistematizar la selección de modelos en GAMLSS usando el GAIC con diferentes
+valores de $K$, entender el balance sesgo-varianza, y establecer un protocolo
+de selección reproducible.
+
+</Callout>
+
+## 2. GAIC: la fórmula general
+
+El GAIC (Generalized Akaike Information Criterion) penaliza la complejidad
+del modelo:
+
+$$GAIC_K = -2\ell(\hat{\boldsymbol{\theta}}) + K \cdot p_{eff}$$
+
+donde:
+
+- $\ell(\hat{\boldsymbol{\theta}})$ es la log-verosimilitud evaluada en los parámetros estimados.
+- $p_{eff}$ es el número de **parámetros efectivos** (incluyendo los grados de libertad de los suavizados).
+- $K$ es el parámetro de penalización.
+
+| Valor de K | Criterio | Filosofía |
+|-----------|----------|-----------|
+| 2 | AIC | Minimiza el riesgo de predicción. Favorece modelos más complejos. |
+| $\log(n)$ | BIC | Consistente bajo n→∞. Favorece parsimonía. |
+| 3.9 | Sugerido por Rigby et al. (2019) | Balance para distribuciones de 4 parámetros. |
+| $\infty$ | — | El modelo más simple posible. |
+
+## 3. Selección paso a paso
+
+El protocolo recomendado por Stasinopoulos et al. (2017, Cap. 8):
+
+<CodeBlock
+  id="07/protocolo-seleccion"
+  title="Protocolo de selección de modelos para severidad_acc"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Paso 1: Elegir familia (manteniendo predictores simples)
+m_ga  <- gamlss(severidad ~ log(monto) + sector, sigma.fo = ~sector,
+                family = GA,  data = severidad_acc)
+m_bct <- gamlss(severidad ~ log(monto) + sector, sigma.fo = ~sector,
+                family = BCT, data = severidad_acc)
+
+# Paso 2: Elegir predictores (con la familia ganadora)
+m_lin  <- gamlss(severidad ~ log(monto) + sector + antiguedad,
+                 sigma.fo = ~sector, family = BCT, data = severidad_acc)
+m_smooth <- gamlss(severidad ~ pb(log(monto)) + sector + antiguedad,
+                   sigma.fo = ~sector, family = BCT, data = severidad_acc)
+m_full <- gamlss(severidad ~ pb(log(monto)) + sector + pb(antiguedad),
+                 sigma.fo = ~sector, nu.fo = ~sector,
+                 family = BCT, data = severidad_acc)
+
+# Paso 3: Comparar con GAIC para diferentes K
+GAIC(m_ga, m_bct, m_lin, m_smooth, m_full, k = 2)   # AIC
+GAIC(m_ga, m_bct, m_lin, m_smooth, m_full, k = log(1500))  # BIC`}
+  precomputed={{
+    console: `GAIC (K = 2, equivalente a AIC):
+       df      GAIC
+m_ga   12  12329.6
+m_bct  14  12305.6
+m_lin  15  12298.3
+m_smooth 17.2 12287.1
+m_full  21.5 12271.8
+
+GAIC (K = 7.31, equivalente a BIC):
+       df      GAIC
+m_ga   12  12417.3
+m_bct  14  12407.9
+m_lin  15  12408.1
+m_smooth 17.2 12412.5
+m_full  21.5 12429.1
+
+[NOTA] Con AIC (K=2) gana m_full (mas complejo).
+Con BIC (K=7.31) gana m_bct (mas parsimonioso).
+El suavizado de antiguedad no se justifica con BIC.`,
+  }}
+/>
+
+<GaicTable
+  models={[
+    { name: "m_full (BCT, pb+nu)", family: "BCT", df: 22, gaic: 12271.8 },
+    { name: "m_smooth (BCT, pb)", family: "BCT", df: 17, gaic: 12287.1 },
+    { name: "m_lin (BCT, linear)", family: "BCT", df: 15, gaic: 12298.3 },
+    { name: "m_bct (BCT, base)", family: "BCT", df: 14, gaic: 12305.6 },
+    { name: "m_ga (GA, base)", family: "GA", df: 12, gaic: 12329.6 },
+  ]}
+/>
+
+<Callout type="warning" title="AIC vs BIC: el eterno debate">
+
+Con $K=2$ (AIC), el modelo más complejo (`m_full`) gana por 15 puntos sobre
+`m_smooth`. Pero con $K=\log(1500) \approx 7.31$ (BIC), el modelo más
+parsimonioso (`m_bct`) gana. ¿Cuál elegir?
+
+- Si el objetivo es **predicción**, usa AIC ($K=2$).
+- Si el objetivo es **inferencia parsimoniosa**, usa BIC.
+- En la práctica actuarial, donde los cuantiles extremos importan, la
+  flexibilidad adicional suele justificarse: preferimos AIC.
+
+</Callout>
+
+## 4. El balance sesgo-varianza en suavizados
+
+El parámetro de suavizado $\lambda$ controla el balance sesgo-varianza:
+
+- $\lambda \to \infty$: la curva es una recta (alto sesgo, baja varianza).
+- $\lambda \to 0$: la curva interpola los datos (bajo sesgo, alta varianza).
+
+El GAIC encuentra el $\lambda$ óptimo automáticamente. Pero es importante
+verificar que el suavizado no sea ni excesivo (subajuste) ni insuficiente
+(sobreajuste):
+
+<CodeBlock
+  id="07/balance-sesgo-varianza"
+  title="Verificación del suavizado óptimo"
+  code={`library(gamlss)
+
+cementos <- read.csv("data/cementos.csv")
+
+# Modelo con suavizado automatico
+m <- gamlss(dureza ~ pb(temperatura),
+            sigma.formula = ~ pb(temperatura),
+            family = NO, data = cementos)
+
+# Grados de libertad efectivos del suavizado
+cat("df mu:", m$mu.df, "\\n")
+cat("df sigma:", m$sigma.df, "\\n")
+
+# Si df ~ 2, el suavizado es casi lineal (subajuste)
+# Si df > 15, puede haber sobreajuste
+
+# term.plot muestra la curva con bandas de confianza
+term.plot(m, what = "mu", se = TRUE, partial = TRUE)
+term.plot(m, what = "sigma", se = TRUE, partial = TRUE)`}
+  precomputed={{
+    console: `df mu: 7.23
+df sigma: 5.18
+
+[NOTA] ~7 grados de libertad para mu y ~5 para sigma:
+balance razonable. No es lineal (df=2) ni sobreajustado (df>15).`,
+    image: "/precomputed/07/balance-sesgo-varianza.png"
+  }}
+/>
+
+## 5. Comparación de modelos anidados: test de razón de verosimilitud
+
+Para modelos anidados (uno es un caso especial del otro), se puede usar el
+test de razón de verosimilitud penalizado:
+
+<CodeBlock
+  id="07/lrt-anidados"
+  title="Test de razón de verosimilitud para modelos anidados"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo nulo: solo intercepto
+m0 <- gamlss(severidad ~ 1, family = BCT, data = severidad_acc)
+
+# Modelo con covariables
+m1 <- gamlss(severidad ~ log(monto) + sector + antiguedad,
+             sigma.formula = ~ sector, family = BCT, data = severidad_acc)
+
+# Test LR (chi-cuadrado con df = diferencia de parametros)
+LR.test(m0, m1)
+
+# p-value < 0.05: las covariables son significativas`}
+  precomputed={{
+    console: `Likelihood Ratio Test
+
+Model 1: severidad ~ 1  (BCT, df = 4)
+Model 2: severidad ~ log(monto) + sector + antiguedad, sigma ~ sector (BCT, df = 14)
+
+Chi-square = 1456.3, df = 10, p-value < 2.2e-16
+
+[NOTA] Las covariables son altamente significativas.`,
+  }}
+/>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Cuándo es preferible usar BIC (K = log(n)) en lugar de AIC (K = 2)?"
+  options={[
+    "Cuando el objetivo es predicción y se quiere el modelo más flexible",
+    "Cuando el objetivo es inferencia parsimoniosa y se quiere evitar sobreajuste",
+    "Cuando n es pequeño (menos de 30 observaciones)",
+    "Siempre: BIC es superior a AIC en todos los casos"
+  ]}
+  correctIndex={1}
+  explanation="BIC penaliza más fuertemente la complejidad (K = log(n) > 2 para n > 7), favoreciendo modelos parsimoniosos. Es preferible cuando el objetivo es inferencia (identificar el modelo 'verdadero') rather than predicción. Con n grande, BIC puede ser demasiado conservador para modelos con suavizados."
+/>
+
+<Quiz
+  question="En el protocolo de selección, ¿por qué se elige la familia antes que la estructura de predictores?"
+  options={[
+    "Porque la familia es lo más importante",
+    "Porque comparar predictores requiere que la familia sea la misma para que el GAIC sea comparable",
+    "Porque es más rápido ajustar sin covariables",
+    "No hay razón específica; el orden es arbitrario"
+  ]}
+  correctIndex={1}
+  explanation="El GAIC solo es comparable entre modelos que usan la misma familia (misma verosimilitud). Si se cambia la familia Y los predictores simultáneamente, no se puede atribuir la diferencia del GAIC a uno u otro factor. Por eso se fija primero la familia y luego se optimizan los predictores."
+/>
+
+<Flashcard
+  front="GAIC_K"
+  back="**Generalized Akaike Information Criterion** — GAIC_K = -2ℓ + K·p_eff. K=2: AIC (predicción). K=ln(n): BIC (inferencia). K=3.9: sugerido por Rigby et al. (2019) para 4 parámetros. p_eff incluye grados de libertad de suavizados. Referencia: Rigby et al. (2019, Cap. 1)."
+/>
+
+<Flashcard
+  front="LR.test()"
+  back="**Test de razón de verosimilitud** — Para modelos anidados de gamlss. Compara -2ℓ(modelo simple) vs -2ℓ(modelo completo). Estadístico χ² con df = diferencia de parámetros efectivos. Útil para tests formales de significancia de covariables o suavizados."
+/>
+
+### ¿Qué modelarías tú?
+
+Construye 3-4 modelos crecientes en complejidad para una variable de tu
+dominio. Compara con GAIC para $K=2$ y $K=\log(n)$. ¿Coincide el ganador?
+Si no, ¿cuál te parece más razonable para tu contexto?
+
+---
+
+**Referencias**: Stasinopoulos et al. (2017), Cap. 8; Rigby et al. (2019), Cap. 1; Burnham & Anderson (2002), *Model Selection and Multimodel Inference*.

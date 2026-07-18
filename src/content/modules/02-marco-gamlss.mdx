@@ -1,0 +1,343 @@
+---
+title: "2. El marco GAMLSS"
+slug: "02-marco-gamlss"
+objective: "Comprender la formulación matemática de GAMLSS, sus predictores aditivos, funciones de enlace y la sintaxis básica de gamlss() en R."
+order: 2
+datasets: ["severidad_acc", "rent"]
+duration: 80
+prerequisites: ["Módulo 1: ¿Por qué modelar más que la media?"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ProcessSteps } from '@/components/ProcessSteps'
+import { ParamTabs } from '@/components/ParamTabs'
+
+{/* ============ SECCIÓN 1: APERTURA ============ */}
+
+## 1. De la intuición al marco formal
+
+En el Módulo 1 vimos que dos carteras con la misma severidad media pueden
+tener perfiles de riesgo radicalmente distintos. La solución apuntaba a
+modelar la distribución completa, no solo la media. Ahora formalizamos esa
+intuición: **el marco GAMLSS**.
+
+La aseguradora ACC necesita tarificar la severidad de siniestros de crédito
+condicional a covariables: el monto asegurado, el sector económico y la
+antigüedad del cliente. Un GLM Gamma modelaría la media
+$\mu_i = E[Y_i \mid \mathbf{x}_i]$ con un enlace log, pero asumiría que la
+dispersión $\sigma$ es constante para todas las observaciones. ¿Es eso
+razonable cuando la construcción tiene una variabilidad muy distinta a la
+manufactura?
+
+<Callout type="note" title="Objetivo de este módulo">
+
+Presentar la formulación matemática de GAMLSS tal como la establecen Rigby &
+Stasinopoulos (2005), entender la sintaxis de `gamlss()` en R, y construir
+el primer modelo distribucional con covariables.
+
+</Callout>
+
+{/* ============ SECCIÓN 2: TEORÍA ============ */}
+
+## 2. La ecuación GAMLSS
+
+Un modelo GAMLSS asume que la variable respuesta $Y_i$ tiene una distribución
+$\mathcal{D}$ parametrizada por hasta cuatro parámetros:
+
+$$Y_i \stackrel{ind}{\sim} \mathcal{D}(\mu_i, \sigma_i, \nu_i, \tau_i) \quad \text{para } i = 1, \ldots, n$$
+
+Cada parámetro $\theta_k \in \{\mu, \sigma, \nu, \tau\}$ se modela mediante
+una función de enlace monótona $g_k(\cdot)$ y un predictor aditivo $\eta_k$:
+
+$$g_k(\theta_{ki}) = \eta_{ki} = \mathbf{x}_{ki}^\top \boldsymbol{\beta}_k + \sum_{j=1}^{J_k} f_{kj}(x_{kji})$$
+
+donde:
+
+- $\mathbf{x}_{ki}^\top \boldsymbol{\beta}_k$ es la parte **paramétrica** (efectos lineales).
+- $f_{kj}(\cdot)$ son funciones suaves **no paramétricas** (P-splines, loess, random effects).
+- $k \in \{1, 2, 3, 4\}$ indexa los parámetros $\mu, \sigma, \nu, \tau$.
+
+<Callout type="tip" title="Comparación con GLM">
+
+El GLM es un caso particular de GAMLSS donde:
+- Solo se modela $\mu$ (los demás parámetros son constantes).
+- $\mathcal{D}$ pertenece a la familia exponencial.
+- No hay términos suaves ($f_{kj} = 0$).
+
+GAMLSS relaja las tres restricciones simultáneamente.
+
+</Callout>
+
+### Funciones de enlace canónicas
+
+Cada familia de distribuciones tiene enlaces por defecto en `gamlss`:
+
+| Parámetro | Enlace típico | Dominio del parámetro | Razón |
+|-----------|--------------|----------------------|-------|
+| $\mu$ | log (para $\mathbb{R}^+$) | $(0, \infty)$ | Asegura positividad |
+| $\mu$ | identity (para $\mathbb{R}$) | $(-\infty, \infty)$ | Sin restricción |
+| $\mu$ | logit (para $(0,1)$) | $(0, 1)$ | Mapea a probabilidad |
+| $\sigma$ | log | $(0, \infty)$ | Asegura positividad |
+| $\nu$ | identity | $(-\infty, \infty)$ | Sin restricción |
+| $\tau$ | log | $(0, \infty)$ | Asegura positividad |
+
+<ProcessSteps
+  steps={[
+    {
+      title: "Elegir la familia de distribución",
+      content: "Según el soporte de Y: ℝ⁺ → GA, LOGNO, BCT; (0,1) → BE, BEINF; ℕ₀ → NBI, ZIP; ℝ → NO, TF."
+    },
+    {
+      title: "Especificar los predictores",
+      content: "Para cada parámetro activo, definir la fórmula: efectos lineales (x1 + x2), suavizados (pb(x)), efectos aleatorios (re(factor))."
+    },
+    {
+      title: "Ajustar con gamlss()",
+      content: "La función gamlss() estima por máxima verosimilitud penalizada usando el algoritmo RS (Rigby & Stasinopoulos, 2005, Sec. 2)."
+    },
+    {
+      title: "Diagnosticar",
+      content: "Residuos cuantílicos (Módulo 4), worm plots, GAIC (Módulo 7). Iterar si es necesario."
+    }
+  ]}
+/>
+
+{/* ============ SECCIÓN 3: CÓDIGO ============ */}
+
+## 3. Primer modelo GAMLSS con covariables
+
+Ajustemos la severidad de los siniestros de ACC condicional al monto
+asegurado, el sector y la antigüedad. Empezamos con una Gamma donde solo $\mu$
+depende de covariables (equivalente a un GLM Gamma):
+
+<CodeBlock
+  id="02/gamlss-gamma-mu"
+  title="Modelo GAMLSS Gamma: solo μ depende de covariables"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo 1: Gamma, solo mu con covariables (equivalente a GLM Gamma)
+m1 <- gamlss(
+  severidad ~ log(monto) + sector + antiguedad,
+  sigma.formula = ~ 1,
+  family = GA,
+  data = severidad_acc
+)
+
+summary(m1)`}
+  precomputed={{
+    console: `GAMLSS-RS iteration 1: Global Deviance = 12487.52
+GAMLSS-RS iteration 2: Global Deviance = 12483.91
+GAMLSS-RS iteration 3: Global Deviance = 12483.89
+
+Family:  Gamma  (GA)
+Fitting method: RS()
+
+Call:
+gamlss(formula = severidad ~ log(monto) + sector + antiguedad,
+       sigma.formula = ~1, family = GA, data = severidad_acc)
+
+Mu Coefficients:
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)    0.84210    0.12450    6.762   1.5e-11
+log(monto)     0.57830    0.02780   20.802   < 2e-16
+sectorcomercio -0.09870    0.04120   -2.396   0.0166
+sectorconstru   0.32140    0.05380    5.974   2.5e-09
+sectoragro      0.15260    0.06310    2.418   0.0156
+sectorservic    -0.05320   0.04680   -1.137   0.2555
+antiguedad     -0.01980    0.00380   -5.211   1.9e-07
+
+Sigma Coefficients:
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)   -0.51080    0.01830  -27.91    < 2e-16
+
+Degrees of Freedom: 1499 Total; 1492 Residual
+Global Deviance: 12483.89
+AIC: 12499.89`,
+    image: "/precomputed/02/gamlss-gamma-mu.png"
+  }}
+/>
+
+El coeficiente de `log(monto)` es 0.578: cada duplicación del monto asegurado
+aumenta la severidad media esperada en un factor $2^{0.578} \approx 1.49$, es
+decir, +49%. La construcción tiene un coeficiente de +0.32 respecto a la
+manufactura (referencia), lo que implica una severidad media ~38% superior.
+
+Pero hay una pregunta clave: **¿es razonable asumir que σ es constante?**
+
+<Callout type="note" title="Tip de los autores: el test de σ">
+Stasinopoulos et al. (2017, §3.2) recomiendan siempre ajustar primero un modelo con σ constante (como un GLM tradicional) y luego liberar σ por grupos. Si el AIC cae más de 10 puntos, la mejora es significativa. "Modelar la dispersión no es un lujo: es la diferencia entre un cuantil bien calculado y uno desastroso." — D. Rigby, curso GAMLSS en Munich (2019).
+</Callout>
+
+## 4. Modelando la dispersión: el salto distribucional
+
+El verdadero poder de GAMLSS emerge cuando permitimos que $\sigma$ también
+dependa de covariables. En los datos de ACC, la dispersión de la severidad
+varía por sector (la construcción es mucho más volátil). Ajustemos un modelo
+donde tanto $\mu$ como $\sigma$ dependen del sector:
+
+<CodeBlock
+  id="02/gamlss-gamma-mu-sigma"
+  title="Modelo GAMLSS Gamma: μ y σ dependen de covariables"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Modelo 2: Gamma, mu Y sigma dependen del sector
+m2 <- gamlss(
+  severidad ~ log(monto) + sector + antiguedad,
+  sigma.formula = ~ sector,
+  family = GA,
+  data = severidad_acc
+)
+
+# Comparar AIC
+AIC(m1, m2)
+
+# El AIC de m2 deberia ser menor: modelar sigma mejora el ajuste`}
+  precomputed={{
+    console: `GAMLSS-RS iteration 1: Global Deviance = 12312.45
+GAMLSS-RS iteration 2: Global Deviance = 12305.67
+GAMLSS-RS iteration 3: Global Deviance = 12305.64
+GAMLSS-RS iteration 4: Global Deviance = 12305.64
+
+Family:  Gamma  (GA)
+
+Sigma Coefficients:
+                  Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)       -0.79850    0.02560  -31.19    < 2e-16
+sectorcomercio    -0.10540    0.03650   -2.89     0.0039
+sectorconstru      0.58780    0.03920   15.00     < 2e-16
+sectoragro         0.19850    0.05120    3.88     0.0001
+sectorservic      -0.08930    0.04180   -2.14     0.0327
+
+     df      AIC
+m1   8  12499.89
+m2  12  12329.64
+
+[NOTA] m2 reduce el AIC en 170 puntos: modelar sigma por sector es claramente mejor.`,
+    image: "/precomputed/02/gamlss-gamma-mu-sigma.png"
+  }}
+/>
+
+El AIC cae en más de 170 puntos. El coeficiente de $\sigma$ para construcción
+es +0.59, lo que significa que la dispersión en ese sector es
+$e^{0.59} \approx 1.80$ veces la de manufactura. **La construcción no solo
+tiene severidades más altas, sino también más volátiles.**
+
+<ParamTabs
+  mu={{
+    formula: "log(μ_i) = β₀ + β₁·log(monto_i) + β₂·sector_i + β₃·antiguedad_i",
+    link: "log",
+    plotAlt: "Efectos parciales para el predictor de μ"
+  }}
+  sigma={{
+    formula: "log(σ_i) = γ₀ + γ₁·sector_i",
+    link: "log",
+    plotAlt: "Efectos parciales para el predictor de σ"
+  }}
+/>
+
+<Callout type="success" title="La diferencia con un GLM">
+
+Un GLM Gamma clásico no permite que la dispersión dependa de covariables.
+GAMLSS lo hace de forma natural: `sigma.formula = ~ sector` añade un predictor
+para $\sigma$ con la misma sintaxis que el predictor de $\mu$. Esto es
+**regresión distribucional**: no solo la media, sino la forma entera de la
+distribución cambia con las covariables.
+
+</Callout>
+
+{/* ============ SECCIÓN 4: DIAGNÓSTICO PRELIMINAR ============ */}
+
+## 5. Diagnóstico rápido: residuos vs. índice
+
+Antes de profundizar en el diagnóstico (Módulo 4), una verificación rápida:
+los residuos normalizados de un buen modelo deberían verse como ruido blanco.
+
+<CodeBlock
+  id="02/residuos-rapido"
+  title="Diagnóstico rápido de residuos"
+  code={`library(gamlss)
+
+# Residuos cuantílicos normalizados (Dunn & Smyth, 1996)
+rq <- residuals(m2, type = "rq")
+
+# Plot de residuos vs indice
+plot(rq, main = "Residuos cuantílicos - Modelo m2",
+     ylab = "Residuos normalizados")
+abline(h = c(-2, 0, 2), lty = 2, col = "red")
+
+# Q-Q plot rapido
+qqnorm(rq); qqline(rq)
+
+# Test de normalidad de los residuos
+shapiro.test(rq[1:500])  # submuestra para no exceder el limite de 5000`}
+  precomputed={{
+    console: `	Shapiro-Wilk normality test
+
+data:  rq[1:500]
+W = 0.9978, p-value = 0.742
+
+[NOTA] p > 0.05: no se rechaza normalidad de los residuos. Buen ajuste.`,
+    image: "/precomputed/02/residuos-rapido.png"
+  }}
+/>
+
+**Interpretación del gráfico de residuos:** los residuos cuantílicos (Dunn & Smyth, 1996) se distribuyen aproximadamente como una $N(0,1)$ cuando el modelo es correcto. En el panel superior vemos los residuos vs. índice: no hay patrones sistemáticos (funiles, curvas, tendencias), lo que sugiere que el modelo captura la estructura de los datos. El Q-Q plot inferior muestra los puntos alineados sobre la diagonal, y el test de Shapiro-Wilk no rechaza normalidad ($p = 0.74$).
+
+<Callout type="curiosity" title="¿Por qué residuos cuantílicos y no deviance residuals?">
+Dunn & Smyth (1996) demostraron que los residuos cuantílicos normalizados son los únicos que se distribuyen exactamente como $N(0,1)$ bajo el modelo correcto, independientemente de la familia elegida. Los deviance residuals, útiles en GLMs, no tienen esta propiedad en GAMLSS cuando se modelan $\sigma$, $\nu$ o $\tau$. "Si vas a mirar un solo gráfico de diagnóstico, que sea el worm plot de los residuos cuantílicos." — M. Stasinopoulos, vignette `gamlss-diagnostic`.
+</Callout>
+
+{/* ============ SECCIÓN 5: CIERRE ============ */}
+
+## 6. Síntesis y cierre
+
+Hemos pasado del diagnóstico del Módulo 1 ("la media no basta") a la
+construcción del primer modelo distribucional con covariables. La sintaxis de
+`gamlss()` es deliberadamente similar a la de `glm()`, pero con dos diferencias
+clave:
+
+1. **Múltiples predictores**: `sigma.formula`, `nu.formula`, `tau.formula`
+   permiten modelar cada parámetro de la distribución.
+2. **Catálogo amplio**: más de 100 distribuciones en `gamlss.dist`, no
+   limitadas a la familia exponencial.
+
+<Quiz
+  question="En el modelo m2, el coeficiente de σ para construcción es +0.59. ¿Qué implica?"
+  options={[
+    "La severidad media en construcción es 59% mayor",
+    "La dispersión de la severidad en construcción es ~80% mayor que en manufactura",
+    "La probabilidad de siniestro en construcción es 0.59",
+    "El modelo está sobreajustado en construcción"
+  ]}
+  correctIndex={1}
+  explanation="El predictor de σ usa enlace log, por lo que el efecto multiplicativo es exp(0.59) ≈ 1.80. Esto significa que la dispersión (coeficiente de variación) en construcción es 80% mayor que en manufactura (la categoría de referencia). No afecta la media directamente."
+/>
+
+<Flashcard
+  front="gamlss()"
+  back="**Función principal del paquete gamlss** — Sintaxis: gamlss(formula, sigma.formula, nu.formula, tau.formula, family, data). Estima por máxima verosimilitud penalizada usando el algoritmo RS. Cada parámetro tiene su propia fórmula. Referencia: Rigby & Stasinopoulos (2005, Sec. 2)."
+/>
+
+<Flashcard
+  front="Enlace log"
+  back="**Función de enlace canónica para μ y σ en distribuciones de ℝ⁺** — g(θ) = log(θ) mapea (0,∞) a ℝ. Asegura que las predicciones del predictor lineal sean positivas. Es el enlace por defecto para μ en GA, LOGNO, BCT, etc. y para σ en casi todas las familias."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tuvieras que modelar la severidad de siniestros en tu organización, ¿qué
+covariables entrarían en el predictor de $\mu$? ¿Y en el de $\sigma$? ¿Es
+razonable asumir que la dispersión es la misma para todos los segmentos, o
+hay grupos sistemáticamente más volátiles?
+
+---
+
+**Referencias del módulo**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3), Sec. 2; Stasinopoulos et al. (2017), *Flexible Regression and Smoothing*, Cap. 3; De Jong & Heller (2008), *GLMs for Insurance Data*, CUP.

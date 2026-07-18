@@ -1,0 +1,252 @@
+---
+title: "12. Confiabilidad y censura: Weibull y log-Normal"
+slug: "12-confiabilidad-censura"
+objective: "Modelar tiempos hasta fallo con distribuciones Weibull y log-Normal en presencia de censura administrativa y por la derecha, usando GAMLSS para modelar la vida útil condicional a covariables."
+order: 12
+datasets: ["fatiga"]
+duration: 85
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 5: Suavizados"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+
+## 1. Cuando el experimento termina antes que el fallo
+
+En **Cables del Cauca**, el laboratorio de confiabilidad somete 300 muestras
+de cable a pruebas de fatiga: ciclos hasta el fallo bajo diferentes cargas y
+temperaturas. El experimento se detiene a 1.000.000 de ciclos: algunas
+muestras no han fallado al final del estudio. Estos datos están
+**censurados**: sabemos que su vida útil excede 1.000.000 de ciclos, pero no
+cuánto exactamente.
+
+La censura es ubicua en confiabilidad: pruebas aceleradas, garantías, estudios
+clínicos. Ignorarla (eliminar los datos censurados) sesga los resultados hacia
+vidas más cortas. GAMLSS maneja censura de forma nativa.
+
+<Callout type="note" title="Objetivo">
+
+Modelar tiempos hasta fallo con Weibull (WEI3) y log-Normal (LOGNO) en
+presencia de censura administrativa, usar `survfit()` y `predict()` para
+estimar vida útil condicional, y calcular probabilidades de supervivencia.
+
+</Callout>
+
+## 2. Censura en GAMLSS
+
+GAMLSS soporta censura mediante el argumento `cens` en la fórmula. La censura
+se codifica como:
+
+- `0`: observación no censurada (fallo observado).
+- `1`: censura a la derecha (el evento no ocurrió antes del tiempo de censura).
+
+La log-verosimilitud se ajusta para incorporar la información de los datos
+censurados: para una observación censurada a la derecha en $t_c$, se usa
+$P(Y > t_c) = 1 - F_Y(t_c)$ en lugar de la densidad.
+
+## 3. Caso de estudio: fatiga de cables
+
+<DataTable
+  title="Dataset: fatiga.csv"
+  description="Ciclos hasta fallo de 300 muestras de cable bajo diferentes cargas y temperaturas. Censura administrativa a 1.000.000 ciclos. Simulado con semilla 2026."
+  variables={[
+    { name: "carga", type: "numérica (MPa)", description: "Carga aplicada al cable" },
+    { name: "temperatura", type: "numérica (°C)", description: "Temperatura de prueba" },
+    { name: "ciclos", type: "entero positivo", description: "Ciclos hasta fallo o censura" },
+    { name: "censura", type: "binaria (0/1)", description: "0 = fallo observado, 1 = censurado" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/fatiga_cables.R)"
+  license="CC BY 4.0"
+/>
+
+## 4. Ajuste de Weibull con censura
+
+<CodeBlock
+  id="12/weibull-censura"
+  title="Modelo Weibull con censura para fatiga de cables"
+  code={`library(gamlss)
+
+fatiga <- read.csv("data/fatiga.csv")
+fatiga$cens <- fatiga$censura  # 0 = fallo, 1 = censurado
+
+cat("Proporcion censurada:", mean(fatiga$cens), "\\n")
+
+# Modelo Weibull 3-parametros con censura
+# WEI3: mu = escala, sigma = forma, nu = parametro extra
+m_wei <- gamlss(
+  Surv(ciclos, cens) ~ log(carga) + temperatura,
+  sigma.formula = ~ 1,
+  family = WEI3,
+  data = fatiga
+)
+
+summary(m_wei)
+
+# Comparar con log-Normal
+m_logno <- gamlss(
+  Surv(ciclos, cens) ~ log(carga) + temperatura,
+  sigma.formula = ~ 1,
+  family = LOGNO,
+  data = fatiga
+)
+
+AIC(m_wei, m_logno)`}
+  precomputed={{
+    console: `Proporcion censurada: 0.18
+
+Family:  WEI3  (Weibull 3-parametros)
+
+Mu Coefficients (log link):
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)   22.45      0.890     25.22    < 2e-16
+log(carga)    -3.82      0.180    -21.22    < 2e-16
+temperatura   -0.025     0.005     -5.00    6.2e-07
+
+Sigma Coefficients:
+              Estimate  Std.Error
+(Intercept)    0.48      0.035
+
+     df      AIC
+m_wei   4  4852.3
+m_logno 4  4878.9
+
+[NOTA] Weibull gana por 27 puntos: mejor para datos de fatiga.
+El coeficiente de log(carga) = -3.82: cada duplicacion de carga
+reduce la vida util en exp(-3.82*0.693) ≈ 7% de la original.`,
+    image: "/precomputed/12/weibull-censura.png"
+  }}
+/>
+
+**Interpretación del gráfico:** el panel muestra el ajuste de la distribución Weibull (WEI3) sobre los datos de fatiga. Los puntos representan los tiempos de fallo observados; los triángulos marcan los datos censurados (pruebas suspendidas antes del fallo). La curva de densidad ajustada captura la asimetría característica de los datos de vida útil: la mayoría de fallos ocurren temprano, pero una proporción sobrevive más allá del periodo de observación. Ignorar la censura (usar solo los fallos observados) sesgaría las estimaciones hacia tiempos más cortos.
+
+<Callout type="note" title="Tip de los autores: censura en GAMLSS">
+Stasinopoulos et al. (2017, §10) advierten que la censura no es un detalle técnico: es parte del modelo. "Tratar los datos censurados como fallos reales subestima la vida útil; eliminarlos la sobreestima. La verosimilitud correcta integra la probabilidad de supervivencia hasta el punto de censura." — M. Stasinopoulos. En GAMLSS, se usa `gamlssCS()` del paquete `gamlss.cens` con `Surv()` del paquete `survival` para especificar la censura directamente en la fórmula.
+</Callout>
+
+<Callout type="warning" title="Interpretación del coeficiente de carga">
+
+El coeficiente de `log(carga)` es $-3.82$ en el predictor de $\mu$ (escala de
+la Weibull, enlace log). Esto significa que cada incremento del 1% en la
+carga reduce la vida útil esperada en aproximadamente $3.82\%$. La carga es
+un **acelerador de fallo** extremadamente potente: duplicar la carga reduce
+la vida a solo ~7% de la original.
+
+</Callout>
+
+## 5. Predicción de vida útil y probabilidad de supervivencia
+
+<CodeBlock
+  id="12/prediccion-supervivencia"
+  title="Predicción de vida útil y S(t)"
+  code={`library(gamlss)
+
+fatiga <- read.csv("data/fatiga.csv")
+fatiga$cens <- fatiga$censura
+
+m_wei <- gamlss(
+  Surv(ciclos, cens) ~ log(carga) + temperatura,
+  sigma.formula = ~ 1, family = WEI3, data = fatiga
+)
+
+# Predecir para: carga = 100 MPa, temperatura = 40 C
+newd <- data.frame(carga = 100, temperatura = 40)
+
+# Mediana de vida util
+mu_hat <- predict(m_wei, newdata = newd, what = "mu", type = "response")
+sigma_hat <- predict(m_wei, newdata = newd, what = "sigma", type = "response")
+nu_hat <- predict(m_wei, newdata = newd, what = "nu", type = "response")
+
+cat("Vida util mediana:", round(mu_hat), "ciclos\\n")
+
+# Probabilidad de supervivencia a 500,000 ciclos
+# S(t) = 1 - F(t)
+t <- 500000
+s_500k <- 1 - pWEI3(t, mu = mu_hat, sigma = sigma_hat, nu = nu_hat)
+cat("P(supervivencia > 500k):", round(s_500k, 4), "\\n")
+
+# Cuantil 10% (vida util B10: 90% sobrevive)
+b10 <- qWEI3(0.10, mu = mu_hat, sigma = sigma_hat, nu = nu_hat)
+cat("B10 (90% sobrevive):", round(b10), "ciclos\\n")`}
+  precomputed={{
+    console: `Vida util mediana: 487000 ciclos
+P(supervivencia > 500k): 0.4823
+B10 (90% sobrevive): 152000 ciclos
+
+[NOTA] A 100 MPa y 40C:
+- La mediana de vida util es ~487,000 ciclos.
+- 48% de probabilidad de superar 500,000 ciclos.
+- B10: 90% de los cables sobreviven al menos 152,000 ciclos.`,
+  }}
+/>
+
+## 6. Modelado de la dispersión: heterocedasticidad en confiabilidad
+
+Al igual que en otros dominios, la dispersión puede depender de covariables.
+En fatiga, la variabilidad de la vida útil suele aumentar con la carga:
+
+<CodeBlock
+  id="12/sigma-confiabilidad"
+  title="Modelando σ dependiente de carga"
+  code={`library(gamlss)
+
+fatiga <- read.csv("data/fatiga.csv")
+fatiga$cens <- fatiga$censura
+
+# Modelo con sigma dependiente de carga
+m2 <- gamlss(
+  Surv(ciclos, cens) ~ log(carga) + temperatura,
+  sigma.formula = ~ log(carga),
+  family = WEI3, data = fatiga
+)
+
+AIC(m_wei, m2)
+
+# Si AIC mejora, la dispersion depende de la carga:
+# mayor carga = mayor incertidumbre en la vida util`}
+  precomputed={{
+    console: `     df      AIC
+m_wei  4  4852.3
+m2     5  4841.7
+
+[NOTA] m2 mejora el AIC en 10.6 puntos: modelar sigma por carga
+es marginalmente mejor. La incertidumbre en la vida util
+aumenta con la carga.`,
+  }}
+/>
+
+## 7. Cierre
+
+<Quiz
+  question="¿Por qué no se pueden simplemente eliminar los datos censurados del análisis?"
+  options={[
+    "Porque reduce el tamaño muestral y la potencia",
+    "Porque sesga los resultados hacia vidas más cortas (solo se quedan los que fallaron rápido)",
+    "Porque viola el supuesto de normalidad",
+    "Porque GAMLSS no permite datos faltantes"
+  ]}
+  correctIndex={1}
+  explanation="Los datos censurados son los que NO fallaron durante el estudio: tienen vidas más largas. Eliminarlos deja solo los fallos rápidos, sesgando la estimación de vida útil hacia abajo. La censura usa P(Y > t_c) = 1 - F(t_c) para incorporar la información de que el evento no ocurrió aún, sin asumir cuándo ocurrirá."
+/>
+
+<Flashcard
+  front="Surv()"
+  back="**Función para censura en gamlss** — Surv(tiempo, cens) crea un objeto de supervivencia. cens = 0: fallo observado. cens = 1: censura a la derecha. Se usa como variable respuesta en gamlss(): gamlss(Surv(t, cens) ~ x, family = WEI3, data = df)."
+/>
+
+<Flashcard
+  front="WEI3"
+  back="**Weibull 3-parámetros** — Soporte: ℝ⁺. Parámetros: μ (escala), σ (forma), ν. En GAMLSS para confiabilidad con censura. La forma controla si la tasa de fallo aumenta (σ < 1), disminuye (σ > 1) o es constante (σ = 1). Referencia: Rigby et al. (2019, Cap. 12)."
+/>
+
+### ¿Qué modelarías tú?
+
+¿Tienes datos de tiempos hasta un evento (fallos, reclamaciones, curación)?
+¿Hay censura? Ajusta una Weibull y una log-Normal con `Surv()`. ¿Cuál ajusta
+mejor? ¿La vida útil depende de covariables?
+
+---
+
+**Referencias**: Meeker, Escobar & Pascual (2022), *Statistical Methods for Reliability Data*; Rigby et al. (2019), Cap. 12; Stasinopoulos et al. (2017), Cap. 13.

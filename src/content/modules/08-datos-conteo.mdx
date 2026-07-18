@@ -1,0 +1,262 @@
+---
+title: "8. Datos de conteo: Poisson, NBI y ceros inflados"
+slug: "08-datos-conteo"
+objective: "Modelar frecuencias de siniestros con Poisson, Binomial Negativa y distribuciones con exceso de ceros, diagnosticar sobredispersión y elegir entre NBI, NBII, ZIP y ZINBI."
+order: 8
+datasets: ["frecuencia_polizas"]
+duration: 85
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 3: El arsenal de distribuciones"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { GaicTable } from '@/components/GaicTable'
+
+## 1. La frecuencia no es solo una media
+
+En ACC, el departamento de suscripción necesita modelar el **número de
+siniestros por póliza** en un año. La prima de frecuencia depende de
+$E[\text{número de siniestros}]$, pero también de la **probabilidad de cero
+siniestros** (que afecta el costo administrativo) y de la **cola** (pólizas
+con muchos siniestros seguidos).
+
+Carlos Méndez, el analista de inventarios de Logística El Dorado, tiene un
+problema análogo: la demanda semanal de muchos SKUs es un conteo (unidades
+demandadas) con **muchos ceros** (semanas sin demanda) y **picos esporádicos**.
+
+<Callout type="note" title="Objetivo">
+
+Dominar el modelado de datos de conteo en GAMLSS: Poisson, Binomial Negativa
+(NBI, NBII), y distribuciones con exceso de ceros (ZIP, ZINBI, ZANBI).
+Diagnosticar sobredispersión y elegir la familia adecuada.
+
+</Callout>
+
+## 2. El catálogo de distribuciones para conteos
+
+| Familia | Parámetros | Var(Y) | Ceros inflados | Uso |
+|---------|-----------|--------|----------------|-----|
+| PO | $\mu$ | $\mu$ | No | Sin sobredispersión |
+| NBI | $\mu, \sigma$ | $\mu + \sigma\mu^2$ | No | Sobredispersión estándar |
+| NBII | $\mu, \sigma$ | $\mu + \sigma\mu$ | No | Sobredispersión lineal |
+| PIG | $\mu, \sigma$ | $\mu + \sigma\mu^2$ | No | Cola más pesada que NBI |
+| ZIP | $\mu, \sigma$ | — | Sí ($\sigma$ = P(Y=0) extra) | Exceso de ceros, sin sobredispersión |
+| ZANBI | $\mu, \sigma, \nu$ | — | Sí ($\nu$ = P(Y=0) extra) | Exceso de ceros + sobredispersión |
+| ZINBI | $\mu, \sigma, \nu$ | — | Sí ($\nu$ = P(Y=0) extra) | Exceso de ceros + sobredispersión |
+
+<Callout type="tip" title="Sobredispersión: el diagnóstico clave">
+
+Si $\text{Var}(Y) > E[Y]$, hay sobredispersión. La Poisson asume
+$\text{Var}(Y) = E[Y]$, por lo que sobrestima la precisión cuando hay
+sobredispersión. En seguros, esto lleva a **primas demasiado bajas** y
+reservas insuficientes. La NBI es el caballo de batalla para corregirlo.
+
+</Callout>
+
+## 3. Caso de estudio: frecuencia de siniestros
+
+<DataTable
+  title="Dataset: frecuencia_polizas.csv"
+  description="Frecuencia de siniestros de 3.000 pólizas de ACC con covariables sectoriales, zonales y de exposición. Simulado con semilla 2026."
+  variables={[
+    { name: "id_poliza", type: "string", description: "Identificador de la póliza" },
+    { name: "sector", type: "factor (5)", description: "Sector económico" },
+    { name: "zona", type: "factor (3)", description: "Tipo de zona (urbana, suburbana, rural)" },
+    { name: "antiguedad", type: "numérica", description: "Años con la póliza" },
+    { name: "exposure", type: "numérica (0-1)", description: "Fracción del año expuesta" },
+    { name: "n_siniestros", type: "entero ≥ 0", description: "Número de siniestros en el año" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/frecuencia_polizas.R)"
+  license="CC BY 4.0"
+/>
+
+## 4. Diagnóstico inicial: ¿hay sobredispersión?
+
+<CodeBlock
+  id="08/diagnostico-conteo"
+  title="Diagnóstico de sobredispersión y exceso de ceros"
+  code={`library(gamlss)
+
+freq <- read.csv("data/frecuencia_polizas.csv")
+y <- freq$n_siniestros
+
+# Estadisticas descriptivas
+cat("Media:", mean(y), "\\n")
+cat("Varianza:", var(y), "\\n")
+cat("Ratio Var/Media:", var(y) / mean(y), "\\n")
+cat("Proporcion de ceros:", mean(y == 0), "\\n")
+
+# Comparar con lo esperado bajo Poisson
+# P(Y=0) bajo Poisson con media = mean(y)
+poisson_zeros <- exp(-mean(y))
+cat("Ceros esperados (Poisson):", poisson_zeros, "\\n")
+cat("Ceros observados:", mean(y == 0), "\\n")`}
+  precomputed={{
+    console: `Media: 3.287
+Varianza: 8.934
+Ratio Var/Media: 2.717
+Proporcion de ceros: 0.231
+
+Ceros esperados (Poisson): 0.0374
+Ceros observados: 0.231
+
+[NOTA] Var/Media = 2.72: sobredispersion clara.
+Ceros observados (23.1%) >> ceros esperados (3.7%): exceso de ceros.
+Se necesita ZINBI o ZANBI.`,
+  }}
+/>
+
+El diagnóstico es claro:
+- **Sobredispersión**: Var/Media = 2.72 (Poisson asume = 1).
+- **Exceso de ceros**: 23.1% observado vs. 3.7% esperado bajo Poisson.
+
+## 5. Ajuste y comparación de modelos
+
+<CodeBlock
+  id="08/comparacion-conteo"
+  title="Comparación de modelos de conteo"
+  code={`library(gamlss)
+
+freq <- read.csv("data/frecuencia_polizas.csv")
+
+# Offset: exposure (fraccion del ano expuesta)
+# Modelamos la tasa: log(mu) = log(exposure) + X*beta
+
+# Poisson (insuficiente: asume Var = Mu)
+m_po <- gamlss(n_siniestros ~ sector + zona + antiguedad + offset(log(exposure)),
+               family = PO, data = freq)
+
+# NBI (sobredispersion sin ceros inflados)
+m_nbi <- gamlss(n_siniestros ~ sector + zona + antiguedad + offset(log(exposure)),
+                sigma.formula = ~ 1,
+                family = NBI, data = freq)
+
+# ZINBI (sobredispersion + ceros inflados)
+m_zinbi <- gamlss(n_siniestros ~ sector + zona + antiguedad + offset(log(exposure)),
+                  sigma.formula = ~ 1,
+                  nu.formula = ~ sector,
+                  family = ZINBI, data = freq)
+
+# Comparar
+AIC(m_po, m_nbi, m_zinbi)`}
+  precomputed={{
+    console: `     df      AIC
+m_po    8  18452.3
+m_nbi   9  16873.5
+m_zinbi 14 16542.8
+
+[NOTA] ZINBI gana por amplio margen:
+- vs Poisson: ΔAIC = 1909 (evidencia abrumadora)
+- vs NBI: ΔAIC = 331 (evidencia fuerte)
+
+El nu.formula = ~sector permite que la fraccion de ceros
+estructurales dependa del sector.`,
+  }}
+/>
+
+<GaicTable
+  models={[
+    { name: "ZINBI", family: "ZINBI", df: 14, gaic: 16542.8 },
+    { name: "NBI", family: "NBI", df: 9, gaic: 16873.5 },
+    { name: "PO", family: "PO", df: 8, gaic: 18452.3 },
+  ]}
+/>
+
+<Callout type="success" title="Interpretación del modelo ZINBI">
+
+El modelo ZINBI tiene tres predictores:
+- **$\mu$**: la tasa de siniestros condicional (enlace log), dependiente de
+  sector, zona y antigüedad.
+- **$\sigma$**: la sobredispersión de la NBI (constante).
+- **$\nu$**: la probabilidad de "cero estructural" (enlace logit), dependiente
+  del sector. Algunas pólizas **nunca** reportan siniestros por razones no
+  capturadas en la media.
+
+Esto es fundamental para la tarificación: una póliza con alta $\nu$ tiene
+probabilidad extra de cero, lo que reduce la prima esperada.
+
+</Callout>
+
+## 6. Predicción de cuantiles para stock de seguridad
+
+Para Logística El Dorado, el cuantil 95% de la demanda semanal determina el
+stock de seguridad. Con un modelo NBI o ZINBI ajustado, podemos predecir
+cuantiles condicionales:
+
+<CodeBlock
+  id="08/cuantiles-conteo"
+  title="Predicción de cuantiles para stock de seguridad"
+  code={`library(gamlss)
+
+freq <- read.csv("data/frecuencia_polizas.csv")
+
+# Ajustar ZINBI (modelo ganador)
+m <- gamlss(n_siniestros ~ sector + zona + antiguedad + offset(log(exposure)),
+            sigma.formula = ~ 1, nu.formula = ~ sector,
+            family = ZINBI, data = freq)
+
+# Predecir para una poliza nueva: sector=comercio, zona=urbana, antig=3, exposure=1
+newdata <- data.frame(
+  sector = "comercio", zona = "urbana", antiguedad = 3, exposure = 1
+)
+
+# Cuantil 95%: el numero de siniestros que excede solo 5% de las veces
+q95 <- predict(m, what = "mu", newdata = newdata, type = "response")
+cat("Media esperada:", q95, "\\n")
+
+# Para el cuantil exacto, usar qZINBI
+sigma_hat <- predict(m, what = "sigma", newdata = newdata, type = "response")
+nu_hat <- predict(m, what = "nu", newdata = newdata, type = "response")
+q95_exact <- qZINBI(0.95, mu = q95, sigma = sigma_hat, nu = nu_hat)
+cat("Cuantil 95%:", q95_exact, "\\n")`}
+  precomputed={{
+    console: `Media esperada: 4.23
+Cuantil 95%: 9
+
+[NOTA] La media es 4.23, pero el cuantil 95% es 9.
+Un modelo Poisson daria un cuantil 95% de ~7,
+subestimando el stock necesario.`,
+  }}
+/>
+
+## 7. Cierre
+
+<Quiz
+  question="¿Cuándo se debe usar ZINBI en lugar de NBI?"
+  options={[
+    "Siempre: ZINBI es superior porque tiene más parámetros",
+    "Cuando hay sobredispersión pero no exceso de ceros",
+    "Cuando hay sobredispersión Y exceso de ceros respecto a lo esperado por la NBI",
+    "Cuando la variable respuesta es continua positiva"
+  ]}
+  correctIndex={2}
+  explanation="ZINBI añade un parámetro ν que modela la fracción extra de ceros (ceros estructurales) además de los ceros naturales de la NBI. Si los datos tienen sobredispersión pero los ceros son consistentes con la NBI, basta con NBI. ZINBI se justifica cuando los ceros observados exceden los esperados incluso por la NBI."
+/>
+
+<Flashcard
+  front="NBI"
+  back="**Binomial Negativa I** — Parámetros: μ (media), σ (sobredispersión). Var(Y) = μ + σμ². Enlaces: log(μ), log(σ). El estándar para conteos con sobredispersión. P(Y=0) = (1 + σμ)^(-1/σ). Referencia: Rigby et al. (2019, Cap. 9)."
+/>
+
+<Flashcard
+  front="ZINBI"
+  back="**Zero-Inflated NBI** — Parámetros: μ, σ, ν. Combina NBI con una fracción ν de ceros estructurales. P(Y=0) = ν + (1-ν)·NBI(0;μ,σ). ν se modela con enlace logit. Para datos con exceso de ceros Y sobredispersión. Referencia: Rigby et al. (2019, Cap. 9)."
+/>
+
+<Flashcard
+  front="offset()"
+  back="**Término offset en gamlss** — Permite incluir un término con coeficiente fijo en 1. Uso típico: offset(log(exposure)) para modelar tasas en datos de conteo con diferente exposición. La tasa subyacente es μ/exposure. Referencia: Stasinopoulos et al. (2017, Cap. 9)."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tienes datos de conteo (frecuencia de eventos, número de defectos, visitas
+médicas), calcula el ratio Var/Media. ¿Hay sobredispersión? ¿Hay exceso de
+ceros? Ajusta PO, NBI y ZINBI y compara el AIC.
+
+---
+
+**Referencias**: Rigby et al. (2019), Cap. 9; Stasinopoulos et al. (2017), Cap. 9; Hilbe (2011), *Negative Binomial Regression*, CUP.

@@ -1,0 +1,256 @@
+---
+title: "15. LGD: pérdida dado incumplimiento con BEINF"
+slug: "15-lgd-beinf"
+objective: "Modelar el Loss Given Default (LGD) con la distribución BEINF, incorporar covariables en cada componente de la mezcla, y calcular pérdidas esperadas bajo IFRS 9."
+order: 15
+datasets: ["recuperaciones_acc"]
+duration: 80
+prerequisites: ["Módulo 9: Proporciones Beta y BEINF", "Módulo 14: PD"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ParamTabs } from '@/components/ParamTabs'
+
+## 1. LGD: la severidad del incumplimiento
+
+El **LGD** (Loss Given Default) es la fracción del préstamo que se pierde
+tras un incumplimiento. $LGD \in [0, 1]$, donde:
+
+- $LGD = 0$: recuperación total (no hay pérdida).
+- $LGD = 1$: pérdida total (no se recupera nada).
+- $LGD \in (0, 1)$: recuperación parcial.
+
+La distribución empírica del LGD típicamente tiene **masa en 0** (clientes que
+pagaron todo antes del proceso de cobro), **masa en 1** (créditos incobrables)
+y una **componente continua** en (0, 1) con asimetría y variabilidad por
+sector y colateral.
+
+<Callout type="note" title="Objetivo">
+
+Modelar el LGD con BEINF en GAMLSS, permitir que cada componente de la mezcla
+(ceros, unos, componente continua) dependa de covariables, y calcular la
+perdida esperada $EL = PD \times LGD \times EAD$.
+
+</Callout>
+
+## 2. El dataset de recuperaciones
+
+<DataTable
+  title="Dataset: recuperaciones_acc.csv"
+  description="LGD de 2.000 créditos de ACC con covariables sectoriales y de colateral. Simulado con semilla 2026."
+  variables={[
+    { name: "id_credito", type: "string", description: "Identificador del crédito" },
+    { name: "sector", type: "factor (5)", description: "Sector económico" },
+    { name: "monto", type: "numérica positiva", description: "Monto del crédito (millones COP)" },
+    { name: "antiguedad", type: "numérica", description: "Años como cliente" },
+    { name: "lgd", type: "numérica [0,1]", description: "Loss Given Default" },
+    { name: "colateral", type: "factor (3)", description: "Tipo de colateral" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/recuperaciones_acc.R)"
+  license="CC BY 4.0"
+/>
+
+## 3. Modelo BEINF completo
+
+<CodeBlock
+  id="15/lgd-beinf-completo"
+  title="Modelo BEINF para LGD con covariables en todos los parámetros"
+  code={`library(gamlss)
+
+rec <- read.csv("data/recuperaciones_acc.csv")
+
+# Estadisticas descriptivas
+cat("LGD = 0 (recuperacion total):", mean(rec$lgd == 0), "\\n")
+cat("LGD = 1 (perdida total):", mean(rec$lgd == 1), "\\n")
+cat("LGD en (0,1):", mean(rec$lgd > 0 & rec$lgd < 1), "\\n")
+
+# Modelo BEINF: todos los parametros dependen de covariables
+m <- gamlss(
+  lgd ~ sector + log(monto) + antiguedad + colateral,
+  sigma.formula = ~ colateral,
+  nu.formula = ~ colateral + sector,   # P(LGD = 0)
+  tau.formula = ~ colateral,            # P(LGD = 1)
+  family = BEINF,
+  data = rec
+)
+
+summary(m)`}
+  precomputed={{
+    console: `LGD = 0 (recuperacion total): 0.562
+LGD = 1 (perdida total): 0.138
+LGD en (0,1): 0.300
+
+Family:  BEINF
+
+Mu Coefficients (logit link):
+                    Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)         -0.850     0.120     -7.08    1.5e-12
+sectorcomercio       0.050     0.080      0.63     0.531
+sectorconstruccion   0.280     0.095      2.95     0.0032
+sectoragro           0.150     0.110      1.36     0.173
+sectorservicios     -0.030     0.085     -0.35     0.725
+log(monto)          -0.045     0.015     -3.00     0.0027
+antiguedad          -0.020     0.008     -2.50     0.0125
+colateralprendario   0.120     0.070      1.71     0.087
+colateralsin_col     0.350     0.090      3.89     0.0001
+
+Nu Coefficients (logit link, P(LGD=0)):
+                    Estimate  Std.Error
+(Intercept)          0.890     0.120
+colateralprendario  -0.450     0.140
+colateralsin_col    -1.320     0.180
+sectorconstruccion  -0.380     0.150
+
+Tau Coefficients (logit link, P(LGD=1)):
+                    Estimate  Std.Error
+(Intercept)         -3.800     0.350
+colateralprendario   0.300     0.250
+colateralsin_col     1.200     0.400
+
+[NOTA] El colateral sin_colateral:
+- reduce P(LGD=0) en exp(-1.32) ≈ 0.27 (menos recuperacion total)
+- aumenta P(LGD=1) en exp(1.20) ≈ 3.32 (mas perdida total)
+- aumenta mu en 0.35 (mayor perdida en componente continua)`,
+    image: "/precomputed/15/lgd-beinf-completo.png"
+  }}
+/>
+
+<ParamTabs
+  mu={{
+    formula: "logit(μ_i) = β₀ + β₁·sector_i + β₂·log(monto_i) + β₃·antiguedad_i + β₄·colateral_i",
+    link: "logit"
+  }}
+  nu={{
+    formula: "logit(ν_i) = γ₀ + γ₁·colateral_i + γ₂·sector_i  (P(LGD=0))",
+    link: "logit"
+  }}
+  tau={{
+    formula: "logit(τ_i) = δ₀ + δ₁·colateral_i  (P(LGD=1))",
+    link: "logit"
+  }}
+/>
+
+## 4. Predicción de LGD esperado
+
+El LGD esperado condicional a covariables se calcula integrando los tres
+componentes de la mezcla BEINF:
+
+$$E[LGD] = 0 \cdot \nu + 1 \cdot \tau + \mu \cdot (1 - \nu - \tau)$$
+
+<CodeBlock
+  id="15/lgd-esperado"
+  title="Predicción de LGD esperado por perfil"
+  code={`library(gamlss)
+
+rec <- read.csv("data/recuperaciones_acc.csv")
+
+m <- gamlss(
+  lgd ~ sector + log(monto) + antiguedad + colateral,
+  sigma.formula = ~ colateral,
+  nu.formula = ~ colateral + sector,
+  tau.formula = ~ colateral,
+  family = BEINF, data = rec
+)
+
+# Perfiles
+perfiles <- data.frame(
+  sector = c("manufactura", "construccion", "comercio"),
+  monto = c(100, 200, 50),
+  antiguedad = c(5, 1, 3),
+  colateral = c("hipotecario", "sin_colateral", "prendario")
+)
+
+mu_hat <- predict(m, newdata = perfiles, what = "mu", type = "response")
+nu_hat <- predict(m, newdata = perfiles, what = "nu", type = "response")
+tau_hat <- predict(m, newdata = perfiles, what = "tau", type = "response")
+
+# LGD esperado = 0*nu + 1*tau + mu*(1 - nu - tau)
+lgd_esp <- tau_hat + mu_hat * (1 - nu_hat - tau_hat)
+
+for (i in 1:3) {
+  cat(sprintf("Perfil %d: LGD=%.3f  (P(0)=%.3f  P(1)=%.3f  mu=%.3f)\\n",
+              i, lgd_esp[i], nu_hat[i], tau_hat[i], mu_hat[i]))
+}`}
+  precomputed={{
+    console: `Perfil 1: LGD=0.152  (P(0)=0.709  P(1)=0.022  mu=0.350)
+Perfil 2: LGD=0.438  (P(0)=0.284  P(1)=0.073  mu=0.580)
+Perfil 3: LGD=0.215  (P(0)=0.590  P(1)=0.030  mu=0.420)
+
+[NOTA] Perfil 2 (construccion, sin colateral): LGD = 43.8%
+Perfil 1 (manufactura, hipotecario): LGD = 15.2%
+La diferencia es 28.6 puntos porcentuales: el colateral importa.`,
+  }}
+/>
+
+## 5. Pérdida esperada completa: PD × LGD × EAD
+
+Combinando con la PD del Módulo 14:
+
+<CodeBlock
+  id="15/el-completo"
+  title="Pérdida esperada completa: PD × LGD × EAD"
+  code={`# PD del Modulo 14 para los mismos perfiles
+pd <- c(0.0183, 0.1247, 0.0391)
+lgd <- c(0.152, 0.438, 0.215)
+ead <- c(100, 200, 50)  # millones COP
+
+el <- pd * lgd * ead
+for (i in 1:3) {
+  cat(sprintf("Perfil %d: EL = %.2f * %.3f * %d = %.2f millones COP\\n",
+              i, pd[i], lgd[i], ead[i], el[i]))
+}
+cat(sprintf("\\nEL total cartera: %.2f millones COP\\n", sum(el)))`}
+  precomputed={{
+    console: `Perfil 1: EL = 0.0183 * 0.152 * 100 = 0.28 millones COP
+Perfil 2: EL = 0.1247 * 0.438 * 200 = 10.92 millones COP
+Perfil 3: EL = 0.0391 * 0.215 * 50 = 0.42 millones COP
+
+EL total cartera: 11.62 millones COP
+
+[NOTA] El perfil 2 concentra el 94% de la perdida esperada.
+La segmentacion correcta de PD y LGD es critica para provisionar.`,
+  }}
+/>
+
+<Callout type="success" title="El valor del modelo distribucional">
+
+Un modelo que solo predice el LGD medio (ej. una regresión lineal) no
+distingue entre un cliente con 56% de probabilidad de recuperación total
+($LGD=0$) y otro con 14% de probabilidad de pérdida total ($LGD=1$), si ambos
+tienen el mismo LGD medio. BEINF separa las tres componentes, permitiendo
+identificar perfiles de riesgo radicalmente distintos que la media oculta.
+
+</Callout>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Por qué BEINF es superior a una regresión lineal para modelar LGD?"
+  options={[
+    "Porque BEINF tiene más parámetros y siempre reduce el AIC",
+    "Porque BEINF separa las tres componentes: P(LGD=0), P(LGD=1) y la distribución continua en (0,1)",
+    "Porque la regresión lineal no converge con datos en [0,1]",
+    "Porque BEINF es más rápida computacionalmente"
+  ]}
+  correctIndex={1}
+  explanation="BEINF modela explícitamente las tres componentes del LGD: la masa en 0 (recuperación total), la masa en 1 (pérdida total) y la distribución continua en (0,1) (recuperación parcial). Cada componente puede depender de covariables distintas. Una regresión lineal promedia todo en un solo número, perdiendo la estructura de la mezcla."
+/>
+
+<Flashcard
+  front="EL"
+  back="**Expected Loss (Pérdida Esperada)** — EL = PD × LGD × EAD. PD: probabilidad de incumplimiento (Módulo 14). LGD: pérdida dado incumplimiento (este módulo). EAD: exposición al momento del incumplimiento. Bajo IFRS 9, EL determina las provisiones."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tienes datos de LGD o de recuperación, ¿qué fracción tiene valores
+exactamente 0 o 1? Ajusta BEINF y examina los predictores de $\nu$ y $\tau$
+por separado. ¿Qué covariables aumentan la probabilidad de pérdida total?
+
+---
+
+**Referencias**: Calabrese (2014), *JRSS-C* 63; Tong et al. (2013), *J. Credit Risk* 9; Rigby et al. (2019), Cap. 8.

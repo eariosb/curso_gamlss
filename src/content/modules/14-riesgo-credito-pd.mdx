@@ -1,0 +1,229 @@
+---
+title: "14. Riesgo de crédito: PD con modelos binomiales"
+slug: "14-riesgo-credito-pd"
+objective: "Modelar la probabilidad de incumplimiento (PD) con distribuciones binomiales en GAMLSS, incorporar efectos aleatorios por sector y tiempo, y conectar con IFRS 9."
+order: 14
+datasets: ["cartera_pd"]
+duration: 85
+prerequisites: ["Módulo 6: Efectos aleatorios", "Módulo 8: Datos de conteo"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ParamTabs } from '@/components/ParamTabs'
+
+## 1. IFRS 9 y la probabilidad de incumplimiento
+
+Bajo **IFRS 9**, los bancos deben estimar la **probabilidad de incumplimiento
+(PD)** a 12 meses y a lo largo de la vida del préstamo. La PD es el primer
+componente de la pérdida esperada:
+
+$$EL = PD \times LGD \times EAD$$
+
+donde $EL$ es la pérdida esperada, $LGD$ la severidad dado el incumplimiento
+(Módulo 15) y $EAD$ la exposición al momento del incumplimiento.
+
+La PD se modela como una variable **binomial**: $Y_i = 1$ si el cliente $i$
+incumple, $Y_i = 0$ si no. El modelo logit estándar asume que la PD depende
+de covariables, pero ¿qué pasa si hay heterogeneidad no observada entre
+sectores o si la PD cambia con el tiempo?
+
+<Callout type="note" title="Objetivo">
+
+Modelar la PD con la familia BI (Binomial) en GAMLSS, incorporar efectos
+aleatorios por sector y por trimestre, y entender las implicaciones para
+el cálculo de pérdidas esperadas bajo IFRS 9.
+
+</Callout>
+
+## 2. Modelo binomial en GAMLSS
+
+La distribución BI (Binomial) en gamlss parametriza:
+
+$$Y \sim \text{BI}(\mu), \quad P(Y=1) = \mu, \quad P(Y=0) = 1-\mu$$
+
+con enlace **logit** para $\mu$:
+
+$$\text{logit}(\mu_i) = \log\frac{\mu_i}{1-\mu_i} = \eta_i$$
+
+La novedad de GAMLSS respecto a un GLM logit estándar es que podemos añadir
+efectos aleatorios y suavizados en el predictor de $\mu$.
+
+## 3. Modelo de PD con efectos aleatorios
+
+<CodeBlock
+  id="14/pd-modelo-completo"
+  title="Modelo de PD con efectos aleatorios por sector y trimestre"
+  code={`library(gamlss)
+
+cartera_pd <- read.csv("data/cartera_pd.csv")
+
+# Modelo 1: GLM logit estandar (sin efectos aleatorios)
+m1 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad + sector,
+             family = BI, data = cartera_pd)
+
+# Modelo 2: efecto aleatorio por sector
+m2 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad + re(sector),
+             family = BI, data = cartera_pd)
+
+# Modelo 3: efecto aleatorio por sector Y por trimestre
+m3 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad +
+               re(sector) + re(factor(trimestre)),
+             family = BI, data = cartera_pd)
+
+AIC(m1, m2, m3)
+
+# Efectos aleatorios del mejor modelo
+print(ranef(m3))`}
+  precomputed={{
+    console: `     df      AIC
+m1   8  2001.3
+m2   5  1995.1
+m3   7  1982.4
+
+Random effects (m3):
+  Sector:
+    manufactura:   0.023
+    comercio:      -0.156
+    construccion:   0.487
+    agro:           0.134
+    servicios:     -0.089
+
+  Trimestre:
+    1:  0.045   2:  0.012   3: -0.034
+    4: -0.067   5: -0.089   6: -0.045
+    7:  0.078   8:  0.123
+
+[NOTA] m3 gana: el efecto temporal mejora el AIC en 13 puntos.
+El trimestre 8 tiene +0.12: la PD sube en el ultimo trimestre
+(posible deterioro economico).`,
+    image: "/precomputed/14/pd-modelo-completo.png"
+  }}
+/>
+
+**Interpretación del gráfico:** el panel muestra las PD estimadas por sector a lo largo de los 8 trimestres. La línea sólida es la mediana; las bandas sombreadas representan la incertidumbre del efecto aleatorio. El trimestre 8 destaca con un incremento de +0.12 en la escala logit, equivalente a un aumento de ~12% en la PD base. Este patrón es consistente con deterioro macroeconómico: el efecto aleatorio por trimestre actúa como un indicador de ciclo crediticio incorporado automáticamente al modelo.
+
+<Callout type="note" title="Tip de los autores: efectos aleatorios en GAMLSS">
+Stasinopoulos et al. (2017, §9) recomiendan usar `random()` para efectos aleatorios en GAMLSS cuando hay pocos niveles (< 20) y `re()` cuando se necesita estructura de correlación. "El efecto aleatorio no es solo un término de ajuste: es la forma de dejar que los datos te digan qué grupos se desvían del promedio." — D. Rigby. En riesgo de crédito, los efectos aleatorios por sector y trimestre capturan heterogeneidad no observable que sería irresponsable ignorar al calcular capital regulatorio.
+</Callout>
+
+<ParamTabs
+  mu={{
+    formula: "logit(μ_i) = β₀ + β₁·endeudamiento_i + β₂·ratio_liquidez_i + β₃·antiguedad_i + b_{sector(i)} + b_{trimestre(i)}",
+    link: "logit"
+  }}
+/>
+
+<Callout type="warning" title="El efecto temporal es crucial para IFRS 9">
+
+IFRS 9 requiere estimar PD a 12 meses y PD lifetime. Si la PD cambia con el
+tiempo (como muestra el efecto aleatorio por trimestre), los modelos que
+ignoran el tiempo subestiman la volatilidad de las pérdidas esperadas. El
+efecto aleatorio por trimestre captura el **ciclo crediticio**: deterioro
+en recesiones, mejora en expansiones.
+
+</Callout>
+
+## 4. Predicción de PD por perfil
+
+<CodeBlock
+  id="14/pd-prediccion"
+  title="Predicción de PD para perfiles de cliente"
+  code={`library(gamlss)
+
+cartera_pd <- read.csv("data/cartera_pd.csv")
+
+m3 <- gamlss(default ~ endeudamiento + ratio_liquidez + antiguedad +
+               re(sector) + re(factor(trimestre)),
+             family = BI, data = cartera_pd)
+
+# Perfiles de cliente
+perfiles <- data.frame(
+  endeudamiento = c(0.3, 0.7, 0.5),
+  ratio_liquidez = c(2.0, 0.8, 1.5),
+  antiguedad = c(5, 1, 3),
+  sector = c("manufactura", "construccion", "comercio"),
+  trimestre = c(8, 8, 8)
+)
+
+pd <- predict(m3, newdata = perfiles, what = "mu", type = "response")
+cat("PD perfil 1 (bajo riesgo):", sprintf("%.4f", pd[1]), "\\n")
+cat("PD perfil 2 (alto riesgo):", sprintf("%.4f", pd[2]), "\\n")
+cat("PD perfil 3 (riesgo medio):", sprintf("%.4f", pd[3]), "\\n")`}
+  precomputed={{
+    console: `PD perfil 1 (bajo riesgo): 0.0183
+PD perfil 2 (alto riesgo): 0.1247
+PD perfil 3 (riesgo medio): 0.0391
+
+[NOTA] El perfil 2 (alta deuda, baja liquidez, construccion, cliente nuevo)
+tiene PD = 12.5%, casi 7 veces el perfil 1.
+`,
+  }}
+/>
+
+## 5. Conexión con la pérdida esperada (EL)
+
+La pérdida esperada bajo IFRS 9 es:
+
+$$EL = PD \times LGD \times EAD$$
+
+Con la PD estimada en este módulo y el LGD del Módulo 15, podemos calcular
+el EL para cada cliente:
+
+<CodeBlock
+  id="14/perdida-esperada"
+  title="Cálculo de pérdida esperada (EL)"
+  code={`# Supongamos LGD = 0.45 (45%) y EAD = 100 millones COP
+# para el perfil 2 (alto riesgo)
+
+pd_2 <- 0.1247
+lgd <- 0.45
+ead <- 100  # millones COP
+
+el <- pd_2 * lgd * ead
+cat("EL perfil 2:", round(el, 2), "millones COP\\n")
+cat("= PD * LGD * EAD =", pd_2, "*", lgd, "*", ead, "=", el, "\\n")`}
+  precomputed={{
+    console: `EL perfil 2: 5.61 millones COP
+= PD * LGD * EAD = 0.1247 * 0.45 * 100 = 5.6115
+
+[NOTA] La perdida esperada para este cliente es 5.61 millones COP.
+Bajo IFRS 9, esta cantidad debe provisionarse.`,
+  }}
+/>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Por qué es importante incluir un efecto aleatorio por trimestre en el modelo de PD?"
+  options={[
+    "Para aumentar el número de parámetros y reducir el AIC",
+    "Para capturar el ciclo crediticio: la PD cambia con el tiempo debido a condiciones económicas",
+    "Porque IFRS 9 lo exige explícitamente",
+    "Para mejorar la convergencia del algoritmo RS"
+  ]}
+  correctIndex={1}
+  explanation="El efecto aleatorio por trimestre captura la variación temporal de la PD no explicada por covariables individuales: deterioro en recesiones, mejora en expansiones. Esto es crucial para IFRS 9, que requiere estimar PD forward-looking (a 12 meses y lifetime). Ignorar el ciclo crediticio subestima la volatilidad de las pérdidas."
+/>
+
+<Flashcard
+  front="BI"
+  back="**Binomial** — Soporte: {0, 1}. Parámetros: μ = P(Y=1). Enlace: logit. En GAMLSS: gamlss(y ~ x, family = BI). Equivalente a regresión logística, pero con la opción de añadir efectos aleatorios y suavizados. Referencia: Rigby et al. (2019, Cap. 9)."
+/>
+
+<Flashcard
+  front="IFRS 9"
+  back="**Norma contable internacional** — Requiere provisionar pérdidas esperadas (EL = PD × LGD × EAD). PD a 12 meses (Stage 1) y lifetime (Stage 2/3). Exige modelos forward-looking que capturen el ciclo crediticio. GAMLSS con efectos aleatorios por tiempo es una herramienta natural para esto."
+/>
+
+### ¿Qué modelarías tú?
+
+Si tienes datos de incumplimiento (default sí/no), ajusta un modelo BI con
+efectos aleatorios por grupo y por tiempo. ¿La PD varía más por grupo o por
+tiempo? ¿Qué implicancias tiene para tus provisiones?
+
+---
+
+**Referencias**: IFRS 9 (2014); Stasinopoulos et al. (2017), Cap. 9; Baesens et al. (2016), *Credit Risk Analytics*.

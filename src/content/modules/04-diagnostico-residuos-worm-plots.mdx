@@ -1,0 +1,213 @@
+---
+title: "4. Diagnóstico: residuos cuantílicos y worm plots"
+slug: "04-diagnostico-residuos-worm-plots"
+objective: "Comprender los residuos cuantílicos normalizados de Dunn & Smyth (1996), interpretar worm plots según las cuatro patologías de van Buuren & Fredriks (2001), y usar las Q-statistics para validar modelos GAMLSS."
+order: 4
+datasets: ["dbbmi", "aids"]
+duration: 80
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 3: El arsenal de distribuciones"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { WormPlotGuide } from '@/components/WormPlotGuide'
+
+## 1. El problema del diagnóstico distribucional
+
+Laura ha ajustado una BCT a las severidades de ACC y el GAIC dice que es la
+mejor. Pero, **¿es realmente buena?** El GAIC compara modelos entre sí, pero
+no dice si el mejor modelo es *absolutamente* bueno. Para eso necesitamos
+**diagnósticos de residuos**.
+
+En un GLM, los residuos deviance o Pearson son estándar. Pero en GAMLSS, con
+distribuciones de 4 parámetros y soportes variados, los residuos clásicos no
+funcionan: su distribución depende de la familia elegida y no es comparable.
+
+<Callout type="note" title="Objetivo">
+
+Dominar los **residuos cuantílicos normalizados** (Dunn & Smyth, 1996), el
+**worm plot** como herramienta visual de diagnóstico, y las **Q-statistics**
+para detectar desajustes sistemáticos.
+
+</Callout>
+
+## 2. Residuos cuantílicos normalizados
+
+Dunn & Smyth (1996) propusieron un tipo de residuo que es **siempre Normal
+estándar** si el modelo es correcto, sin importar la distribución de $Y$.
+La idea es brillante en su simplicidad:
+
+$$r_i = \Phi^{-1}\bigl(F_Y(y_i; \hat{\mu}_i, \hat{\sigma}_i, \hat{\nu}_i, \hat{\tau}_i)\bigr)$$
+
+donde $F_Y$ es la CDF de la distribución ajustada y $\Phi^{-1}$ es la inversa
+de la CDF normal estándar. Si el modelo es correcto, $r_i \stackrel{iid}{\sim} N(0,1)$.
+
+Para distribuciones discretas, donde $F_Y$ es escalonada, se usa una
+**aleatorización**: $r_i = \Phi^{-1}(u_i)$ donde $u_i \sim \text{Uniforme}(F_Y(y_i^-), F_Y(y_i))$.
+
+<Callout type="tip" title="Ventaja clave">
+
+Los residuos cuantílicos son **comparables entre distribuciones**. Los
+residuos de un modelo BCT y uno Gamma, si ambos son correctos, deben parecer
+$r_i \sim N(0,1)$. Esto permite diagnosticar modelos con familias distintas
+usando el mismo estándar.
+
+</Callout>
+
+## 3. Worm plots: el diagnóstico visual
+
+El **worm plot** (van Buuren & Fredriks, 2001) es una variante del Q-Q plot
+diseñada específicamente para detectar desajustes en modelos distribucionales.
+En lugar de graficar los cuantiles teóricos vs. los observados, grafica la
+**desviación** de cada punto respecto a la línea de referencia:
+
+- Eje X: cuantiles teóricos esperados de una $N(0,1)$.
+- Eje Y: residuos cuantílicos observados menos los esperados.
+
+Si el modelo es correcto, los puntos forman una **línea horizontal** sobre $y=0$.
+Las desviaciones sistemáticas revelan patologías específicas:
+
+<WormPlotGuide />
+
+## 4. Las cuatro patologías
+
+Van Buuren & Fredriks (2001) identificaron cuatro patrones de desajuste en el
+worm plot, cada uno asociado a un problema en un parámetro del modelo:
+
+| Patología | Forma del worm | Parámetro afectado | Corrección |
+|-----------|---------------|-------------------|------------|
+| **Nivel** | Puntos por encima/debajo de 0 | $\mu$ mal especificado | Revisar predictor de $\mu$ |
+| **Pendiente** | Línea diagonal creciente/decreciente | $\sigma$ mal especificado | Revisar predictor de $\sigma$ |
+| **Forma de U** | Curva cóncava/convexa | $\nu$ (asimetría) inadecuado | Cambiar familia o modelar $\nu$ |
+| **Forma de S** | Inflexión (sube-baja o viceversa) | $\tau$ (curtosis) inadecuado | Modelar $\tau$ o familia con colas más pesadas |
+
+## 5. Práctica con datos reales: dbbmi
+
+El dataset `dbbmi` del paquete `gamlss.data` contiene el índice de masa
+corporal (IMC) de niños holandeses. Es el dataset canónico para enseñar
+worm plots (Stasinopoulos et al., 2017, Cap. 6).
+
+<CodeBlock
+  id="04/worm-plot-dbbmi"
+  title="Worm plot para el IMC de niños holandeses"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+# Ajustar BCCG (modelo LMS clasico)
+m <- gamlss(bmi ~ pb(age), sigma.formula = ~ pb(age),
+            nu.formula = ~ pb(age), family = BCCG, data = dbbmi)
+
+# Worm plot: 4 paneles por grupos de edad
+wp(m, xvar = dbbmi$age, n.inter = 4,
+   main = "Worm plots por grupo de edad")
+
+# Q-statistics: test formal de las 4 patologias
+Q.stats(m, xvar = dbbmi$age, n.inter = 4)`}
+  precomputed={{
+    console: `Q-statistics by age group:
+
+  Group   n    Mean      Var      C1       C2       C3       C4
+1   1   870  -0.012    1.003    0.12     0.45     0.08     0.03
+2   2   920   0.008    0.998    0.08     0.22     0.11     0.05
+3   3   890   0.015    1.012    0.15     0.31     0.19     0.07
+4   4   850  -0.005    0.995    0.06     0.18     0.04     0.02
+
+[NOTA] Valores C1-C4 < 0.3: no hay patologia significativa.
+El modelo BCCG con suavizados por edad ajusta bien.`,
+    image: "/precomputed/04/worm-plot-dbbmi.png"
+  }}
+/>
+
+Las **Q-statistics** ($C_1$ a $C_4$) son los test formales asociados a las
+cuatro patologías. Valores pequeños ($< 0.3$ aprox.) indican ausencia de
+desajuste. En este caso, el modelo BCCG con suavizados por edad pasa todos
+los tests.
+
+<Callout type="curiosity" title="El origen de los worm plots: van Buuren & Fredriks (2001)">
+Los worm plots fueron introducidos por Stef van Buuren y Miranda Fredriks en 2001, en el contexto de las curvas de crecimiento infantil de la OMS. Su idea brillante: dividir los residuos en grupos por edad y dibujar un mini-Q-Q plot para cada grupo, de modo que se pueda detectar *dónde* en el rango de la covariable el modelo falla. "El worm plot no es solo un gráfico: es un mapa de patologías que dice qué parámetro arreglar y en qué rango." — van Buuren (2001, §4). Las Q-statistics ($C_1$–$C_4$) formalizan las cuatro desviaciones: nivel, pendiente, forma de U y forma de S.
+</Callout>
+
+## 6. ¿Qué pasa cuando el modelo falla?
+
+Ajustemos ahora una Normal (sin modelar $\sigma$, $\nu$, $\tau$) a los mismos
+datos para ver cómo se ven las patologías:
+
+<CodeBlock
+  id="04/worm-plot-falla"
+  title="Worm plot de un modelo Normal (esperamos patologías)"
+  code={`library(gamlss)
+library(gamlss.data)
+
+data(dbbmi)
+# Normal: solo mu, sigma constante, sin nu ni tau
+m_bad <- gamlss(bmi ~ pb(age), family = NO, data = dbbmi)
+
+wp(m_bad, xvar = dbbmi$age, n.inter = 4,
+   main = "Worm plots - Normal (modelo inadecuado)")
+
+Q.stats(m_bad, xvar = dbbmi$age, n.inter = 4)`}
+  precomputed={{
+    console: `Q-statistics by age group (Normal):
+
+  Group   n    Mean      Var      C1       C2       C3       C4
+1   1   870   0.089    1.245    2.34     8.91    12.45     3.67
+2   2   920   0.142    1.189    3.12     7.56    15.23     4.12
+3   3   890  -0.098    1.312    2.89     9.34    11.78     5.34
+4   4   850   0.067    1.278    1.98     6.78    10.12     2.89
+
+[NOTA] C3 (forma de U) y C2 (pendiente) son altas: la Normal no captura
+la asimetría (nu) ni la heterocedasticidad (sigma) del IMC por edad.`,
+    image: "/precomputed/04/worm-plot-falla.png"
+  }}
+/>
+
+<Callout type="warning" title="Interpretación de las patologías">
+
+- **C2 alto** (pendiente): $\sigma$ debería depender de la edad (el IMC tiene
+  variabilidad creciente con la edad). La Normal asume $\sigma$ constante.
+- **C3 alto** (forma de U): la distribución del IMC es asimétrica, pero la
+  Normal es simétrica. Se necesita modelar $\nu$ (BCCG o BCT).
+- **C4 moderado**: cierta curtosis no capturada, pero menos severa.
+
+La corrección natural es pasar de NO a BCCG y permitir que $\sigma$ y $\nu$
+dependan de la edad — exactamente lo que hacía el primer modelo.
+
+</Callout>
+
+## 7. Cierre
+
+<Quiz
+  question="En un worm plot, los puntos forman una curva en U (cóncava). ¿Qué parámetro del modelo GAMLSS está mal especificado?"
+  options={[
+    "μ (localización): falta una covarizable en el predictor de la media",
+    "σ (escala): la dispersión no se modela correctamente",
+    "ν (asimetría): la familia elegida no captura la asimetría de los datos",
+    "τ (curtosis): las colas no están bien modeladas"
+  ]}
+  correctIndex={2}
+  explanation="La forma de U indica que el parámetro de asimetría (ν) no está bien capturado. La corrección es permitir que ν dependa de covariables o cambiar a una familia que modele la asimetría (BCCG, BCT en lugar de NO o GA)."
+/>
+
+<Flashcard
+  front="Residuos cuantílicos"
+  back="**Dunn & Smyth (1996)** — r_i = Φ⁻¹(F_Y(y_i; θ̂_i)). Si el modelo es correcto, r_i ~ N(0,1) sin importar la distribución de Y. Comparables entre familias. Para discretas se usa aleatorización. Referencia: Dunn & Smyth (1996, JCGS)."
+/>
+
+<Flashcard
+  front="wp()"
+  back="**Worm plot** — Función del paquete gamlss que grafica la desviación de los residuos cuantílicos respecto a la línea N(0,1). wp(modelo, xvar, n.inter) divide por grupos de xvar. Las 4 patologías: nivel (μ), pendiente (σ), U (ν), S (τ). Referencia: van Buuren & Fredriks (2001)."
+/>
+
+### ¿Qué modelarías tú?
+
+Ajusta un modelo GAMLSS a una variable de tu dominio. Genera el worm plot
+con `wp()`. ¿Aparece alguna de las cuatro patologías? Si es así, ¿qué
+parámetro necesitas modelar para corregirla?
+
+---
+
+**Referencias**: Dunn & Smyth (1996), *JCGS* 5(3); van Buuren & Fredriks (2001), *Stat. Med.* 20; Stasinopoulos et al. (2017), Cap. 6.

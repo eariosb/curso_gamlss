@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'katex/dist/katex.min.css';
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #fafafa;
+  color: #212529;
+}
+
+/* Flashcard: efecto de volteo 3D */
+.flashcard-inner {
+  transform-style: preserve-3d;
+  transition: transform 0.5s;
+}
+.flashcard-flipped .flashcard-inner {
+  transform: rotateY(180deg);
+}
+.flashcard-face {
+  backface-visibility: hidden;
+}
+.flashcard-back {
+  transform: rotateY(180deg);
+}
+
+/* KaTeX display: scroll horizontal en pantallas pequeñas */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}

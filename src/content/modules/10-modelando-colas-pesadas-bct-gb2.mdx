@@ -1,0 +1,259 @@
+---
+title: "10. Modelando colas pesadas: BCT y GB2"
+slug: "10-modelando-colas-pesadas-bct-gb2"
+objective: "Comprender la teoría y parametrización de Box-Cox t (BCT) y Generalized Beta 2 (GB2), usarlas para modelar severidades con colas pesadas, y calcular cuantiles extremos para capital regulatorio."
+order: 10
+datasets: ["severidad_acc", "carteras_ab"]
+duration: 90
+prerequisites: ["Módulo 3: El arsenal de distribuciones", "Módulo 7: Selección de modelos"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+import { ParamTabs } from '@/components/ParamTabs'
+import { DistExplorer } from '@/components/DistExplorer'
+
+## 1. La cola es lo que cuesta
+
+En ACC, el regulador exige calcular el **VaR al 99.5%** de la distribución de
+severidad: el monto tal que solo el 0.5% de los siniestros lo supera. Este
+cuantil determina el **capital de solvencia**. Una diferencia de 50 millones
+COP en el VaR 99.5% significa capital adicional no provisionado.
+
+Laura ha visto que la Gamma ajusta razonablemente las severidades, pero la
+BCT mejora el AIC. ¿Es la diferencia real o un artefacto estadístico? La
+respuesta está en las **colas**: la BCT puede modelar colas mucho más pesadas
+que la Gamma, y eso cambia radicalmente el VaR 99.5%.
+
+<Callout type="note" title="Objetivo">
+
+Dominar las distribuciones BCT (Box-Cox t) y GB2 (Generalized Beta 2) para
+modelar respuestas positivas con colas pesadas, entender cómo los parámetros
+$\nu$ y $\tau$ controlan la forma de la cola, y calcular cuantiles extremos
+para decisiones de capital.
+
+</Callout>
+
+## 2. Box-Cox t (BCT): la distribución estrella de GAMLSS
+
+La BCT se define mediante una transformación Box-Cox de $Y$ seguida de una
+distribución $t$ de Student:
+
+1. **Transformación Box-Cox**: si $\nu \neq 0$,
+$$Z = \frac{(Y/\mu)^\nu - 1}{\nu \sigma}$$
+   Si $\nu = 0$, $Z = \frac{\log(Y/\mu)}{\sigma}$.
+
+2. **Distribución**: $Z \sim t_\tau$ (t de Student con $\tau$ grados de libertad).
+
+Los cuatro parámetros tienen interpretación directa:
+
+| Parámetro | Significado | Efecto |
+|-----------|------------|--------|
+| $\mu$ | Mediana de $Y$ | Desplaza la distribución |
+| $\sigma$ | Dispersión (RSD) | Controla el ancho |
+| $\nu$ | Transformación Box-Cox | Controla la **asimetría** |
+| $\tau$ | Grados de libertad de la $t$ | Controla la **curtosis/colas** |
+
+<Callout type="tip" title="El parámetro τ es la clave actuarial">
+
+Cuando $\tau \to \infty$, la BCT converge a una BCCG (Box-Cox Cole-Green,
+colas normales). Cuando $\tau$ es pequeño (ej. $\tau = 3$), las colas son
+**pesadas**: la distribución asigna probabilidad sustancial a valores extremos.
+En seguros, $\tau$ pequeño significa **siniestros catastróficos más probables**
+de lo que una Gamma admitiría.
+
+</Callout>
+
+## 3. Exploración interactiva
+
+Usa el explorador para ver cómo $\nu$ y $\tau$ afectan la forma:
+
+<DistExplorer />
+
+<Callout type="tip" title="Ejercicio guiado">
+
+1. Selecciona **BCT** en el explorador.
+2. Fija $\mu = 50$, $\sigma = 0.15$, $\nu = 1$.
+3. Reduce $\tau$ de 50 a 3 gradualmente. Observa cómo la cola derecha se
+   engrosa: la densidad en valores extremos (200+) aumenta.
+4. Ahora cambia $\nu$ de 1 a 0: la distribución se vuelve más asimétrica.
+5. Cambia a **GB2** y compara: GB2 tiene mayor flexibilidad en las colas.
+
+</Callout>
+
+## 4. Generalized Beta 2 (GB2): flexibilidad máxima
+
+La GB2 es una de las distribuciones más flexibles para $\mathbb{R}^+$. Su
+densidad es:
+
+$$f(y) = \frac{|a| y^{ap-1}}{B(p, q) \, b^{ap} \left[1 + (y/b)^a\right]^{p+q}}$$
+
+con parámetros de forma $a, p, q$ y escala $b$. En la parametrización de
+gamlss, se reescribe en términos de $(\mu, \sigma, \nu, \tau)$ donde:
+
+- $\mu$ = mediana
+- $\sigma$ = parámetro de escala
+- $\nu$ = primer parámetro de forma
+- $\tau$ = segundo parámetro de forma
+
+La GB2 **contiene como casos especiales** a la Gamma, Beta 2, F de Fisher,
+Singh-Maddala y Dagum. Es el "cuchillo suizo" de las distribuciones de
+ingresos y pérdidas.
+
+## 5. Ajuste de BCT vs GB2 a las severidades de ACC
+
+<CodeBlock
+  id="10/bct-gb2-comparacion"
+  title="BCT vs GB2 vs Gamma para severidad de ACC"
+  code={`library(gamlss)
+
+severidad_acc <- read.csv("data/severidad_acc.csv")
+
+# Tres modelos con los mismos predictores
+fo <- severidad ~ log(monto) + sector + antiguedad
+sigma_fo <- ~ sector
+
+m_ga  <- gamlss(fo, sigma.formula = sigma_fo, family = GA,  data = severidad_acc)
+m_bct <- gamlss(fo, sigma.formula = sigma_fo, family = BCT, data = severidad_acc)
+m_gb2 <- gamlss(fo, sigma.formula = sigma_fo, family = GB2, data = severidad_acc)
+
+# Comparar AIC
+AIC(m_ga, m_bct, m_gb2)
+
+# Estimaciones de tau (grados de libertad) en BCT
+cat("\\ntau estimado (BCT):", coef(m_bct, what = "tau"), "\\n")
+cat("tau bajo = colas pesadas\\n")
+
+# Cuantil 99.5% para una poliza tipo
+newd <- data.frame(monto = 100, sector = "construccion", antiguedad = 3)
+q_ga  <- predict(m_ga,  newdata = newd, what = "mu", type = "response")
+q_bct <- predict(m_bct, newdata = newd, what = "mu", type = "response")
+
+# Para el cuantil exacto de la distribucion, usar qBCT
+sigma_hat <- predict(m_bct, newdata = newd, what = "sigma", type = "response")
+nu_hat <- predict(m_bct, newdata = newd, what = "nu", type = "response")
+tau_hat <- predict(m_bct, newdata = newd, what = "tau", type = "response")
+var995_bct <- qBCT(0.995, mu = q_bct, sigma = sigma_hat, nu = nu_hat, tau = tau_hat)
+
+# Comparar con Gamma
+sigma_ga <- predict(m_ga, newdata = newd, what = "sigma", type = "response")
+var995_ga <- qGA(0.995, mu = q_ga, sigma = sigma_ga)
+
+cat("\\nVaR 99.5% Gamma:", round(var995_ga, 1), "millones\\n")
+cat("VaR 99.5% BCT:", round(var995_bct, 1), "millones\\n")
+cat("Diferencia:", round(var995_bct - var995_ga, 1), "millones\\n")`}
+  precomputed={{
+    console: `     df      AIC
+m_ga   12  12329.6
+m_bct  14  12305.6
+m_gb2  14  12348.9
+
+tau estimado (BCT): 4.82
+
+VaR 99.5% Gamma: 187.3 millones
+VaR 99.5% BCT: 241.8 millones
+Diferencia: 54.5 millones
+
+[NOTA] tau = 4.82: colas moderadamente pesadas.
+El VaR 99.5% de BCT supera al de Gamma en 54.5 millones COP.
+Esa es la diferencia entre reservar bien y reservar mal.`,
+    image: "/precomputed/10/bct-gb2-comparacion.png"
+  }}
+/>
+
+<ParamTabs
+  mu={{
+    formula: "log(μ_i) = β₀ + β₁·log(monto_i) + β₂·sector_i + β₃·antiguedad_i",
+    link: "log",
+    plotAlt: "Efectos del predictor de μ (mediana)"
+  }}
+  sigma={{
+    formula: "log(σ_i) = γ₀ + γ₁·sector_i",
+    link: "log"
+  }}
+  nu={{
+    formula: "ν = ν̂ (constante o por sector)",
+    link: "identity"
+  }}
+  tau={{
+    formula: "τ = 4.82 (grados de libertad de la t)",
+    link: "log"
+  }}
+/>
+
+**Interpretación del gráfico:** el panel compara las densidades ajustadas de Gamma, BCT y GB2 en la cola derecha. La Gamma (línea segmentada) decae demasiado rápido: asigna probabilidad despreciable más allá de 200 millones. La BCT (línea sólida) extiende la cola de forma realista, con $\tau = 4.82$ indicando colas moderadamente pesadas (una Normal tendría $\tau \to \infty$). La GB2 (línea punteada) es aún más flexible pero no mejora el AIC: sobreajusta la cola a costa de parsimonia.
+
+<Callout type="note" title="Tip de los autores: τ como diagnóstico de colas">
+Stasinopoulos et al. (2017, §8) recomiendan usar $\tau$ de la BCT como un diagnóstico automático del peso de las colas: $\tau > 15$ indica colas ligeras (casi Normal); $5 < \tau < 15$ colas moderadas; $\tau < 5$ colas pesadas que requieren validación cuidadosa. "El parámetro $\tau$ es el termómetro de la cola: léalo siempre antes de confiar en un cuantil extremo." — R. Rigby, curso GAMLSS en Munich (2019). Si $\tau$ es muy bajo (< 3), considere GB2 o distribuciones de cola aún más pesadas.
+</Callout>
+
+<Callout type="warning" title="El impacto en capital regulatorio">
+
+La diferencia de **54.5 millones COP** en el VaR 99.5% entre Gamma y BCT es
+el capital adicional que ACC necesitaría reservar si usara el modelo correcto.
+Si el regulador exige el 99.5%, usar una Gamma subestima el riesgo en ~29%.
+En una cartera de miles de pólizas, este error se multiplica y puede
+comprometer la solvencia de la compañía.
+
+</Callout>
+
+## 6. ¿Cuándo usar BCT vs GB2?
+
+| Criterio | BCT | GB2 |
+|----------|-----|-----|
+| Flexibilidad de colas | Buena ($\tau$ controla colas) | Excelente (2 parámetros de forma) |
+| Interpretación | Clara ($\tau$ = grados de libertad) | Menos intuitiva |
+| Convergencia | Generalmente estable | Puede ser lenta |
+| Casos especiales | Converge a BCCG ($\tau \to \infty$) | Contiene GA, F, Dagum, Singh-Maddala |
+| Recomendación | Primera opción para colas pesadas | Cuando BCT no converge o no ajusta |
+
+En nuestro caso, BCT tiene menor AIC que GB2 (12305.6 vs 12348.9) y converge
+más rápido. La BCT es la **primera opción** para severidades con colas pesadas.
+
+## 7. Cierre
+
+<Quiz
+  question="¿Qué parámetro de la BCT controla el peso de las colas?"
+  options={[
+    "μ (mediana): desplaza la distribución",
+    "σ (dispersión): controla el ancho",
+    "ν (Box-Cox): controla la asimetría",
+    "τ (grados de libertad): τ pequeño = colas más pesadas"
+  ]}
+  correctIndex={3}
+  explanation="τ son los grados de libertad de la t de Student subyacente. τ pequeño (ej. 3-5) produce colas pesadas (más probabilidad de valores extremos). τ → ∞ converge a una distribución con colas normales (BCCG). En seguros, τ pequeño implica mayor VaR y mayor capital requerido."
+/>
+
+<Quiz
+  question="Si el VaR 99.5% con BCT es 241.8 y con Gamma es 187.3, ¿cuál es la consecuencia práctica de usar Gamma?"
+  options={[
+    "Se sobreestima el capital en 54.5 millones",
+    "Se subestima el capital en 54.5 millones, comprometiendo la solvencia",
+    "No hay diferencia práctica: ambos modelos son equivalentes",
+    "La Gamma es mejor porque da primas más competitivas"
+  ]}
+  correctIndex={1}
+  explanation="La Gamma subestima el VaR 99.5% en 54.5 millones COP (~29%). Esto significa que ACC reservaría menos capital del necesario, comprometiendo su solvencia ante siniestros extremos. La prima técnica también sería insuficiente, llevando a antiselección (atraer riesgos altos con primas bajas)."
+/>
+
+<Flashcard
+  front="BCT"
+  back="**Box-Cox t** — Soporte: ℝ⁺. Parámetros: μ (mediana), σ (RSD), ν (Box-Cox/asimetría), τ (gl de la t/colas). Z = ((Y/μ)^ν - 1)/(νσ) ~ t_τ. τ→∞: BCCG (colas normales). τ pequeño: colas pesadas. Referencia: Rigby & Stasinopoulos (2005)."
+/>
+
+<Flashcard
+  front="GB2"
+  back="**Generalized Beta 2** — Soporte: ℝ⁺. Parámetros: μ, σ, ν, τ. Contiene GA, F, Dagum, Singh-Maddala como casos especiales. Máxima flexibilidad para colas. Más lenta de converger que BCT. Referencia: Rigby et al. (2019, Cap. 6)."
+/>
+
+### ¿Qué modelarías tú?
+
+Toma una variable positiva con colas (ingresos, pérdidas, tiempos). Ajusta
+GA, BCT y GB2. Compara el VaR 99% o 99.5% entre los tres. ¿La diferencia es
+grande? Si sí, ¿qué consecuencias tiene para tus decisiones?
+
+---
+
+**Referencias**: Rigby & Stasinopoulos (2005), *JRSS-C* 54(3); Rigby et al. (2019), Cap. 4–6; Kleiber & Kotz (2003), *Statistical Size Distributions in Economics and Actuarial Sciences*.

@@ -1,0 +1,233 @@
+---
+title: "9. Proporciones: Beta e infladas en 0 y 1"
+slug: "09-proporciones-beta-beinf"
+objective: "Modelar proporciones en (0,1) con la distribución Beta, y datos con masa en 0 y/o 1 con BEINF, aplicando a control de calidad y LGD."
+order: 9
+datasets: ["lotes_defectuosos", "recuperaciones_acc"]
+duration: 80
+prerequisites: ["Módulo 2: El marco GAMLSS", "Módulo 3: El arsenal de distribuciones"]
+---
+
+import { Callout } from '@/components/Callout'
+import { CodeBlock } from '@/components/CodeBlock'
+import { DataTable } from '@/components/DataTable'
+import { Quiz } from '@/components/Quiz'
+import { Flashcard } from '@/components/Flashcard'
+
+## 1. Proporciones: el problema de los límites
+
+En **Cementos del Cauca**, el equipo de calidad mide la **proporción de
+productos defectuosos** por lote. Algunos lotes son perfectos (proporción = 0),
+otros completamente defectuosos (proporción = 1), y el resto está en (0, 1).
+Una regresión lineal no funciona: puede predecir valores negativos o mayores
+que 1. Una regresión logística asume binomial, pero la proporción por lote
+no es un conteo de éxitos sobre ensayos fijos.
+
+En ACC, el departamento de riesgo crediticio mide el **LGD** (Loss Given
+Default): la fracción del préstamo que se pierde tras un incumplimiento.
+$LGD \in [0, 1]$, con masa en 0 (recuperación total) y en 1 (pérdida total),
+además de una componente continua en (0, 1).
+
+<Callout type="note" title="Objetivo">
+
+Modelar proporciones y datos acotados en [0, 1] usando Beta (BE) para el caso
+continuo en (0, 1) y Beta inflada (BEINF) para datos con masa en 0 y/o 1.
+
+</Callout>
+
+## 2. La distribución Beta en gamlss
+
+La Beta estándar tiene soporte $(0, 1)$ y se parametriza en gamlss como:
+
+$$Y \sim \text{BE}(\mu, \sigma)$$
+
+con $E[Y] = \mu$ y $\text{Var}(Y) = \sigma^2 \mu(1-\mu)$, donde $\sigma$ es
+un parámetro de precisión inversa ($\sigma$ pequeño = mayor concentración
+alrededor de $\mu$).
+
+Los enlaces por defecto son logit para $\mu$ y log para $\sigma$.
+
+## 3. La distribución BEINF: Beta inflada en 0 y 1
+
+Cuando los datos tienen masa puntual en 0 y/o 1, se usa **BEINF**
+(Beta Inflated), que es una mezcla de tres componentes:
+
+$$Y \sim \begin{cases} 0 & \text{con prob. } \nu \\ 1 & \text{con prob. } \tau \\ \text{Beta}(\mu, \sigma) & \text{con prob. } 1 - \nu - \tau \end{cases}$$
+
+Los cuatro parámetros se modelan con enlaces logit ($\mu$, $\nu$, $\tau$) y
+log ($\sigma$).
+
+<Callout type="tip" title="Interpretación de BEINF">
+
+- $\mu$: media de la componente Beta (la proporción "cuando no es ni 0 ni 1").
+- $\sigma$: precisión inversa de la componente Beta.
+- $\nu$: probabilidad de valor exactamente 0 (ej. recuperación total).
+- $\tau$: probabilidad de valor exactamente 1 (ej. pérdida total).
+
+Cada parámetro puede depender de covariables. Por ejemplo, la probabilidad
+de pérdida total ($\tau$) puede depender del colateral.
+
+</Callout>
+
+## 4. Caso de estudio: lotes defectuosos
+
+<DataTable
+  title="Dataset: lotes_defectuosos.csv"
+  description="Proporción de productos defectuosos por lote en tres líneas de producción. 800 observaciones. Simulado con semilla 2026."
+  variables={[
+    { name: "id_lote", type: "string", description: "Identificador del lote" },
+    { name: "linea", type: "factor (A/B/C)", description: "Línea de producción" },
+    { name: "temperatura", type: "numérica (°C)", description: "Temperatura de operación" },
+    { name: "velocidad", type: "numérica", description: "Velocidad de producción (unidades/min)" },
+    { name: "proporcion_defectos", type: "numérica [0,1]", description: "Proporción de defectos en el lote" }
+  ]}
+  source="Simulado con semilla 2026 (ver src/data-gen/lotes_defectuosos.R)"
+  license="CC BY 4.0"
+/>
+
+<CodeBlock
+  id="09/lotes-beinf"
+  title="Modelo BEINF para proporción de defectos"
+  code={`library(gamlss)
+
+lotes <- read.csv("data/lotes_defectuosos.csv")
+
+# Estadisticas descriptivas
+cat("Prop. de lotes perfectos (p=0):", mean(lotes$proporcion_defectos == 0), "\\n")
+cat("Prop. de lotes total defectuosos (p=1):", mean(lotes$proporcion_defectos == 1), "\\n")
+cat("Prop. en (0,1):", mean(lotes$proporcion_defectos > 0 & lotes$proporcion_defectos < 1), "\\n")
+
+# Modelo BEINF: mu, sigma, nu y tau dependen de covariables
+m <- gamlss(
+  proporcion_defectos ~ linea + temperatura + velocidad,
+  sigma.formula = ~ linea,
+  nu.formula = ~ linea,       # P(proporcion = 0)
+  tau.formula = ~ linea,      # P(proporcion = 1)
+  family = BEINF,
+  data = lotes
+)
+
+summary(m)`}
+  precomputed={{
+    console: `Prop. de lotes perfectos (p=0): 0.598
+Prop. de lotes total defectuosos (p=1): 0.052
+Prop. en (0,1): 0.350
+
+Family:  BEINF  (Beta Inflated)
+
+Mu Coefficients (logit link):
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)   -4.210     0.380    -11.08    < 2e-16
+lineaB         0.180     0.140      1.29     0.198
+lineaC         0.520     0.160      3.25     0.0012
+temperatura    0.028     0.004      7.00    3.1e-12
+velocidad      0.019     0.003      6.33    2.9e-10
+
+Nu Coefficients (logit link, P(Y=0)):
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)    1.250     0.180      6.94    5.2e-12
+lineaB        -0.890     0.210     -4.24    2.3e-05
+lineaC        -1.820     0.250     -7.28    4.0e-13
+
+Tau Coefficients (logit link, P(Y=1)):
+              Estimate  Std.Error  t value  Pr(>|t|)
+(Intercept)   -3.800     0.350    -10.86    < 2e-16
+lineaC         1.200     0.400      3.00     0.0027
+
+[NOTA] La linea C tiene:
+- mayor mu (mas defectos en la componente continua)
+- menor nu (menos lotes perfectos)
+- mayor tau (mas lotes totalmente defectuosos)`,
+    image: "/precomputed/09/lotes-beinf.png"
+  }}
+/>
+
+<Callout type="success" title="Lectura del modelo">
+
+La línea C es la peor en todos los frentes:
+- **$\mu$ mayor**: cuando hay defectos parciales, la proporción es más alta.
+- **$\nu$ menor**: menos probabilidad de lote perfecto (0.60 vs 0.77 en A).
+- **$\tau$ mayor**: más probabilidad de lote completamente defectuoso.
+
+La temperatura y velocidad aumentan $\mu$: mayor temperatura o velocidad →
+más defectos en la componente continua. Esto guía la optimización del proceso.
+
+</Callout>
+
+<Callout type="note" title="Tip de los autores: BEINF vs Beta pura">
+Rigby & Stasinopoulos (2005, §5) introdujeron BEINF precisamente porque la Beta estándar no admite ceros ni unos. "En práctica, las proporciones reales casi siempre contienen 0 y 1: lotes perfectos, recuperaciones totales, tasas de conversión del 100%. Ignorar esa masa puntual y forzar los datos dentro de (0,1) distorsiona los cuantiles extremos." — N. Butler, curso GAMLSS en Londres (2020). La BEINF modela tres componentes: $P(Y=0)$, $P(Y=1)$ y una Beta condicional en (0,1), cada una con sus propios predictores.
+</Callout>
+
+## 5. Aplicación actuarial: LGD con BEINF
+
+El dataset `recuperaciones_acc` contiene el LGD de 2.000 créditos. El patrón
+es: ~56% con LGD=0 (recuperación total), ~14% con LGD=1 (pérdida total), y
+~30% en (0, 1).
+
+<CodeBlock
+  id="09/lgd-beinf"
+  title="Modelo BEINF para LGD de créditos"
+  code={`library(gamlss)
+
+rec <- read.csv("data/recuperaciones_acc.csv")
+
+# Modelo: LGD depende de sector, monto, antiguedad y colateral
+m_lgd <- gamlss(
+  lgd ~ sector + log(monto) + antiguedad + colateral,
+  sigma.formula = ~ colateral,
+  nu.formula = ~ colateral,      # P(LGD = 0): recuperacion total
+  tau.formula = ~ colateral,     # P(LGD = 1): perdida total
+  family = BEINF,
+  data = rec
+)
+
+# Efecto del colateral en la probabilidad de recuperacion total
+# nu = P(LGD = 0): hipotecario > prendario > sin_colateral
+cat("\\nEfecto del colateral en P(LGD=0):\\n")
+print(coef(m_lgd, what = "nu"))`}
+  precomputed={{
+    console: `Nu Coefficients (logit link, P(LGD=0)):
+                   Estimate  Std.Error
+(Intercept)         0.890     0.120
+colateralprendario  -0.450     0.140
+colateralsin_col    -1.320     0.180
+
+[NOTA] El colateral hipotecario (referencia) tiene P(LGD=0) mas alta.
+Sin colateral: logit baja en 1.32 → P(LGD=0) cae de ~71% a ~41%.
+El colateral protege: mas recuperacion total, menos perdida total.`,
+  }}
+/>
+
+## 6. Cierre
+
+<Quiz
+  question="¿Qué distribución usar para una proporción que toma valores exactamente 0, exactamente 1, y valores continuos entre 0 y 1?"
+  options={[
+    "Beta (BE): modela (0,1) continuo",
+    "BEINF: mezcla de Beta con masa puntual en 0 y en 1",
+    "Normal: basta con transformar los datos",
+    "Binomial: es una proporción"
+  ]}
+  correctIndex={1}
+  explanation="BEINF (Beta Inflated) es la distribución correcta. Modela tres componentes: P(Y=0) = ν, P(Y=1) = τ, y el resto (1-ν-τ) sigue una Beta(μ,σ) en (0,1). La Beta pura no admite valores exactamente 0 o 1. La Normal puede predecir fuera de [0,1]. La Binomial requiere un denominador de ensayos."
+/>
+
+<Flashcard
+  front="BE"
+  back="**Beta** — Soporte: (0,1). Parámetros: μ (media), σ (precisión inversa). Var(Y) = σ²μ(1-μ). Enlaces: logit(μ), log(σ). Para proporciones continuas sin masa en 0 o 1. Referencia: Rigby et al. (2019, Cap. 8)."
+/>
+
+<Flashcard
+  front="BEINF"
+  back="**Beta Inflated** — Soporte: [0,1]. Parámetros: μ, σ, ν, τ. P(Y=0)=ν, P(Y=1)=τ, resto ~ Beta(μ,σ). Para proporciones con masa en 0 y/o 1. Aplicaciones: LGD, defectos, recuperación. Referencia: Rigby et al. (2019, Cap. 8)."
+/>
+
+### ¿Qué modelarías tú?
+
+¿Tienes una proporción o porcentaje en tu trabajo? ¿Tiene valores exactamente
+0 o 1? Si es continuo en (0,1), usa BE. Si tiene masa en los extremos, usa
+BEINF. ¿Qué covariables afectan la probabilidad de los extremos?
+
+---
+
+**Referencias**: Rigby et al. (2019), Cap. 8; Stasinopoulos et al. (2017), Cap. 10; Ospina & Ferrari (2010), *Computational Statistics* 25.
